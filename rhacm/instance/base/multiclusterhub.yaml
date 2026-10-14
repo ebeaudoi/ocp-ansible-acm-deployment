@@ -4,7 +4,7 @@ metadata:
   namespace: open-cluster-management
   name: multiclusterhub
   annotations:
-    installer.open-cluster-management.io/mce-subscription-spec: '{"source": "patch-me-see-overlays-dir"}'
+    installer.open-cluster-management.io/mce-subscription-spec: '{"source":"patch-me-see-overlays-dir","config":{"nodeSelector":{"node-role.kubernetes.io/infra":""},"tolerations":[{"key":"node-role.kubernetes.io/infra","operator":"Exists","effect":"NoSchedule"},{"key":"node-role.kubernetes.io/infra","operator":"Exists","effect":"NoExecute"}]}}'
 spec:
   nodeSelector:
     node-role.kubernetes.io/infra: ""

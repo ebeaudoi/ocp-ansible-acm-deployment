@@ -11,4 +11,4 @@ patches:
   patch: |-
     - op: replace
       path: /metadata/annotations/installer.open-cluster-management.io~1mce-subscription-spec
-      value: '{"source": "ebdn-redhat-operators"}'
+      value: '{"source":"ebdn-redhat-operators","config":{"nodeSelector":{"node-role.kubernetes.io/infra":""},"tolerations":[{"key":"node-role.kubernetes.io/infra","operator":"Exists","effect":"NoSchedule"},{"key":"node-role.kubernetes.io/infra","operator":"Exists","effect":"NoExecute"}]}}'

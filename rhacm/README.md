@@ -9,6 +9,10 @@ environments using Kustomize.
 - **Cluster Access**: Admin access to the OpenShift cluster
 - **Catalog Source**: Mirrored Red Hat catalog available in the cluster
 - **Infrastructure Nodes**: Workloads target `node-role.kubernetes.io/infra`
+  via explicit `nodeSelector`/`tolerations` on Subscription, MultiClusterHub
+  (including MCE `mce-subscription-spec` config), MultiClusterObservability, and
+  the observability setup Job. Namespaces do **not** use
+  `openshift.io/node-selector` or `scheduler.alpha.kubernetes.io/defaultTolerations`.
 - **ODF (observability only)**: OpenShift Data Foundation with NooBaa and the
   `ocs-storagecluster-ceph-rbd` storage class
 
@@ -145,4 +149,6 @@ oc delete clusterrolebinding acm-gitops-rolebinding --ignore-not-found
 - **Operator not installing**: Verify catalog source, channel, and InstallPlan approval
 - **MultiClusterHub not ready**: Confirm MCE subscription annotation catalog source matches the mirrored catalog
 - **Observability Job failing**: Confirm ODF/NooBaa is healthy and the ose-cli image is pullable from infra nodes
-- **Pods on workers**: Subscription, MultiClusterHub, and MultiClusterObservability all set infra `nodeSelector` and tolerations
+- **Pods on workers**: Confirm Subscription `spec.config`, MultiClusterHub
+  `spec` + MCE annotation `config`, MultiClusterObservability, and the setup Job
+  all set infra `nodeSelector` and tolerations (no namespace scheduler annotations)

@@ -99,13 +99,28 @@ echo ""
 ################################
 echo "[RHACM Instance] Updating MultiClusterHub instance overlay..."
 echo "  File: ${INSTANCE_OVERLAY}"
-MCE_VALUE="{\"source\": \"${RHACM_CATALOG_SOURCE}\"}"
+# Full MCE subscription spec: catalog source + infra placement (not source-only)
+MCE_VALUE=$(python3 - "${RHACM_CATALOG_SOURCE}" <<'PY'
+import json, sys
+source = sys.argv[1]
+print(json.dumps({
+    "source": source,
+    "config": {
+        "nodeSelector": {"node-role.kubernetes.io/infra": ""},
+        "tolerations": [
+            {"key": "node-role.kubernetes.io/infra", "operator": "Exists", "effect": "NoSchedule"},
+            {"key": "node-role.kubernetes.io/infra", "operator": "Exists", "effect": "NoExecute"},
+        ],
+    },
+}, separators=(",", ":")))
+PY
+)
 # Keep single-quoted YAML scalar so JSON braces are preserved
 replace_json6902_value \
   "${INSTANCE_OVERLAY}" \
   "/metadata/annotations/installer.open-cluster-management.io~1mce-subscription-spec" \
   "'${MCE_VALUE}'"
-echo "    Updated MCE subscription spec with catalog: ${RHACM_CATALOG_SOURCE}"
+echo "    Updated MCE subscription spec with catalog: ${RHACM_CATALOG_SOURCE} (infra config preserved)"
 echo ""
 
 echo "=========================================="
