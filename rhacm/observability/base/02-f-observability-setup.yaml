@@ -1,0 +1,78 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: observability-setup
+  namespace: open-cluster-management-observability
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: observability-setup
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        node-role.kubernetes.io/infra: ""
+      tolerations:
+      - key: node-role.kubernetes.io/infra
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/infra
+        operator: Exists
+        effect: NoExecute
+      containers:
+      - name: observability-setup
+        image: patch-me-see-overlays-dir
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "Define pull-secret for MultiClusterObservability"
+          DOCKER_CONFIG_JSON=$(oc extract secret/pull-secret -n openshift-config --to=-)
+          oc create secret generic multiclusterhub-operator-pull-secret \
+            -n open-cluster-management-observability \
+            --from-literal=.dockerconfigjson="${DOCKER_CONFIG_JSON}" \
+            --type=kubernetes.io/dockerconfigjson \
+            --dry-run=client -o yaml | oc apply -f -
+
+          echo "Retrieve acm-observability bucket credentials"
+          ACCESS_KEY=""
+          SECRET_KEY=""
+          ATTEMPTS=0
+          MAX_ATTEMPTS=60
+          while [[ -z "${ACCESS_KEY}" || -z "${SECRET_KEY}" ]]; do
+            if [[ ${ATTEMPTS} -ge ${MAX_ATTEMPTS} ]]; then
+              echo "Timed out waiting for acm-observability bucket secret" >&2
+              exit 1
+            fi
+            echo "Waiting for acm-observability bucket secret (attempt $((ATTEMPTS + 1))/${MAX_ATTEMPTS})"
+            sleep 5
+            ATTEMPTS=$((ATTEMPTS + 1))
+            ACCESS_KEY=$(oc get secret acm-observability -n open-cluster-management-observability -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || true)
+            SECRET_KEY=$(oc get secret acm-observability -n open-cluster-management-observability -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || true)
+          done
+
+          echo "Retrieve bucket name"
+          BUCKET_NAME=$(oc get ObjectBucketClaim acm-observability -n open-cluster-management-observability -o jsonpath='{.spec.bucketName}')
+          if [[ -z "${BUCKET_NAME}" ]]; then
+            echo "ObjectBucketClaim acm-observability has empty bucketName" >&2
+            exit 1
+          fi
+
+          echo "Apply thanos object storage configuration"
+          THANOS_YAML=$(printf '%s\n' \
+            'type: s3' \
+            'config:' \
+            "  bucket: ${BUCKET_NAME}" \
+            '  endpoint: s3.openshift-storage.svc' \
+            '  insecure: true' \
+            "  access_key: ${ACCESS_KEY}" \
+            "  secret_key: ${SECRET_KEY}")
+          oc create secret generic thanos-object-storage \
+            -n open-cluster-management-observability \
+            --from-literal=thanos.yaml="${THANOS_YAML}" \
+            --dry-run=client -o yaml | oc apply -f -

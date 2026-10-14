@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: observability-setup-pull-secret
+  namespace: openshift-config
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: observability-setup-pull-secret
+subjects:
+- kind: ServiceAccount
+  name: observability-setup
+  namespace: open-cluster-management-observability

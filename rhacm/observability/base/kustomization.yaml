@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - 01-acm-observability-bucket.yaml
+  - 02-a-observability-role.yaml
+  - 02-b-observability-rolebinding.yaml
+  - 02-c-openshift-config-role.yaml
+  - 02-d-openshift-config-rolebinding.yaml
+  - 02-e-observability-sa.yaml
+  - 02-f-observability-setup.yaml
+  - 03-multiclusterobservability.yaml

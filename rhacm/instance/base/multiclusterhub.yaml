@@ -1,0 +1,23 @@
+apiVersion: operator.open-cluster-management.io/v1
+kind: MultiClusterHub
+metadata:
+  namespace: open-cluster-management
+  name: multiclusterhub
+  annotations:
+    installer.open-cluster-management.io/mce-subscription-spec: '{"source": "patch-me-see-overlays-dir"}'
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/infra: ""
+  tolerations:
+  - key: node-role.kubernetes.io/infra
+    effect: NoSchedule
+    operator: Exists
+  - key: node-role.kubernetes.io/infra
+    effect: NoExecute
+    operator: Exists
+  overrides:
+    components:
+    - name: console
+      enabled: true
+  # Basic = single-replica hub components. Use components/ha-availability for High.
+  availabilityConfig: Basic

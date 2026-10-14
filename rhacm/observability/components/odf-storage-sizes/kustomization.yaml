@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Override MultiClusterObservability PVC sizes. Edit values for your ODF capacity.
+patches:
+- target:
+    kind: MultiClusterObservability
+    name: observability
+  patch: |-
+    - op: replace
+      path: /spec/storageConfig/alertmanagerStorageSize
+      value: 1Gi
+    - op: replace
+      path: /spec/storageConfig/compactStorageSize
+      value: 100Gi
+    - op: replace
+      path: /spec/storageConfig/receiveStorageSize
+      value: 100Gi
+    - op: replace
+      path: /spec/storageConfig/ruleStorageSize
+      value: 1Gi
+    - op: replace
+      path: /spec/storageConfig/storeStorageSize
+      value: 10Gi
