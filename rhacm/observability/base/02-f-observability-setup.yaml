@@ -27,7 +27,7 @@ spec:
         imagePullPolicy: IfNotPresent
         envFrom:
         - configMapRef:
-            name: s4-thanos-config
+            name: observability-object-storage
         command:
         - /bin/bash
         - -c
@@ -42,65 +42,72 @@ spec:
             --type=kubernetes.io/dockerconfigjson \
             --dry-run=client -o yaml | oc apply -f -
 
-          echo "Wait for S4 credentials Secret ${S4_NAMESPACE}/${S4_SECRET_NAME}"
+          echo "Wait for object-storage credentials Secret ${OBJSTORE_NAMESPACE}/${OBJSTORE_SECRET_NAME}"
           ATTEMPTS=0
           MAX_ATTEMPTS=60
-          while ! oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" >/dev/null 2>&1; do
+          while ! oc get secret "${OBJSTORE_SECRET_NAME}" -n "${OBJSTORE_NAMESPACE}" >/dev/null 2>&1; do
             if [[ ${ATTEMPTS} -ge ${MAX_ATTEMPTS} ]]; then
-              echo "Timed out waiting for ${S4_NAMESPACE}/${S4_SECRET_NAME}. Deploy S4 first (s4/deploy-s4.yaml)." >&2
+              echo "Timed out waiting for credentials Secret ${OBJSTORE_NAMESPACE}/${OBJSTORE_SECRET_NAME}." >&2
+              echo "Configure object storage: create Secret ${OBJSTORE_SECRET_NAME} in namespace ${OBJSTORE_NAMESPACE}" >&2
+              echo "with keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or set deploy_observability=false." >&2
               exit 1
             fi
-            echo "Waiting for S4 secret (attempt $((ATTEMPTS + 1))/${MAX_ATTEMPTS})"
+            echo "Waiting for credentials secret (attempt $((ATTEMPTS + 1))/${MAX_ATTEMPTS})"
             sleep 5
             ATTEMPTS=$((ATTEMPTS + 1))
           done
 
-          ACCESS_KEY=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
-          SECRET_KEY=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
-          UI_USERNAME=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.UI_USERNAME}' | base64 -d)
-          UI_PASSWORD=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.UI_PASSWORD}' | base64 -d)
+          ACCESS_KEY=$(oc get secret "${OBJSTORE_SECRET_NAME}" -n "${OBJSTORE_NAMESPACE}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+          SECRET_KEY=$(oc get secret "${OBJSTORE_SECRET_NAME}" -n "${OBJSTORE_NAMESPACE}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
 
           if [[ -z "${ACCESS_KEY}" || -z "${SECRET_KEY}" ]]; then
-            echo "S4 secret is missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY" >&2
+            echo "Secret ${OBJSTORE_NAMESPACE}/${OBJSTORE_SECRET_NAME} is missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY" >&2
             exit 1
           fi
 
-          echo "Ensure S4 bucket ${S4_BUCKET} exists via ${S4_API_URL}"
-          AUTH_REQUIRED=$(curl -sf "${S4_API_URL}/auth/info" | sed -n 's/.*"authRequired"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' || true)
-          AUTH_HEADER=()
-          if [[ "${AUTH_REQUIRED}" == "true" ]]; then
-            TOKEN=$(curl -sf -X POST "${S4_API_URL}/auth/login" \
+          # Optional: create bucket via management API (e.g. S4 UI). Skip when empty.
+          if [[ -n "${OBJSTORE_API_URL:-}" ]]; then
+            echo "Ensure bucket ${OBJSTORE_BUCKET} exists via ${OBJSTORE_API_URL}"
+            UI_USERNAME=$(oc get secret "${OBJSTORE_SECRET_NAME}" -n "${OBJSTORE_NAMESPACE}" -o jsonpath='{.data.UI_USERNAME}' | base64 -d 2>/dev/null || true)
+            UI_PASSWORD=$(oc get secret "${OBJSTORE_SECRET_NAME}" -n "${OBJSTORE_NAMESPACE}" -o jsonpath='{.data.UI_PASSWORD}' | base64 -d 2>/dev/null || true)
+            AUTH_REQUIRED=$(curl -sf "${OBJSTORE_API_URL}/auth/info" | sed -n 's/.*"authRequired"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' || true)
+            AUTH_HEADER=()
+            if [[ "${AUTH_REQUIRED}" == "true" ]]; then
+              TOKEN=$(curl -sf -X POST "${OBJSTORE_API_URL}/auth/login" \
+                -H 'Content-Type: application/json' \
+                -d "{\"username\":\"${UI_USERNAME}\",\"password\":\"${UI_PASSWORD}\"}" \
+                | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+              if [[ -z "${TOKEN}" ]]; then
+                echo "Failed to obtain object-store API token from ${OBJSTORE_API_URL}" >&2
+                exit 1
+              fi
+              AUTH_HEADER=(-H "Authorization: Bearer ${TOKEN}")
+            fi
+            HTTP_CODE=$(curl -s -o /tmp/objstore-bucket-create.json -w '%{http_code}' \
+              -X POST "${OBJSTORE_API_URL}/buckets" \
               -H 'Content-Type: application/json' \
-              -d "{\"username\":\"${UI_USERNAME}\",\"password\":\"${UI_PASSWORD}\"}" \
-              | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-            if [[ -z "${TOKEN}" ]]; then
-              echo "Failed to obtain S4 API token" >&2
+              "${AUTH_HEADER[@]}" \
+              -d "{\"bucketName\":\"${OBJSTORE_BUCKET}\"}")
+            if [[ "${HTTP_CODE}" != "200" && "${HTTP_CODE}" != "409" ]]; then
+              echo "Failed to create bucket ${OBJSTORE_BUCKET} (HTTP ${HTTP_CODE}): $(cat /tmp/objstore-bucket-create.json)" >&2
               exit 1
             fi
-            AUTH_HEADER=(-H "Authorization: Bearer ${TOKEN}")
+            echo "Bucket ${OBJSTORE_BUCKET} ready (HTTP ${HTTP_CODE})"
+          else
+            echo "OBJSTORE_API_URL empty — skipping bucket create (ensure bucket ${OBJSTORE_BUCKET} already exists)"
           fi
-          HTTP_CODE=$(curl -s -o /tmp/s4-bucket-create.json -w '%{http_code}' \
-            -X POST "${S4_API_URL}/buckets" \
-            -H 'Content-Type: application/json' \
-            "${AUTH_HEADER[@]}" \
-            -d "{\"bucketName\":\"${S4_BUCKET}\"}")
-          if [[ "${HTTP_CODE}" != "200" && "${HTTP_CODE}" != "409" ]]; then
-            echo "Failed to create S4 bucket ${S4_BUCKET} (HTTP ${HTTP_CODE}): $(cat /tmp/s4-bucket-create.json)" >&2
-            exit 1
-          fi
-          echo "S4 bucket ${S4_BUCKET} ready (HTTP ${HTTP_CODE})"
 
           INSECURE_LINE="false"
-          if [[ "${S4_INSECURE}" == "true" ]]; then
+          if [[ "${OBJSTORE_INSECURE}" == "true" ]]; then
             INSECURE_LINE="true"
           fi
 
-          echo "Apply thanos object storage configuration (endpoint ${S4_ENDPOINT}, bucket ${S4_BUCKET})"
+          echo "Apply thanos object storage configuration (endpoint ${OBJSTORE_ENDPOINT}, bucket ${OBJSTORE_BUCKET})"
           THANOS_YAML=$(printf '%s\n' \
             'type: s3' \
             'config:' \
-            "  bucket: ${S4_BUCKET}" \
-            "  endpoint: ${S4_ENDPOINT}" \
+            "  bucket: ${OBJSTORE_BUCKET}" \
+            "  endpoint: ${OBJSTORE_ENDPOINT}" \
             "  insecure: ${INSECURE_LINE}" \
             "  access_key: ${ACCESS_KEY}" \
             "  secret_key: ${SECRET_KEY}")

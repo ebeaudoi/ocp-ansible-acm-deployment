@@ -1,50 +1,69 @@
 # ocp-ansible-acm-deployment
 
-Kustomize and Ansible manifests to deploy **RHACM**, optional **S4**
-S3-compatible storage, and **OpenShift GitOps** on OpenShift (lab or air-gapped).
+Deploy **RHACM** and **OpenShift GitOps** on OpenShift with Kustomize + Ansible.
+Optional **S4** (or any other S3) for ACM observability object storage.
 
 ## Contents
 
-1. [Repository layout](#repository-layout)
-2. [Prerequisites](#prerequisites)
-3. [Suggested deploy order](#suggested-deploy-order)
-4. [Deploy S4](#deploy-s4)
-5. [Deploy RHACM](#deploy-rhacm)
-6. [Using a different S3 store](#using-a-different-s3-store-for-acm-observability)
-7. [Detailed docs](#detailed-docs)
+1. [Architecture](#architecture)
+2. [Two files you need](#two-files-you-need)
+3. [Pre-flight checklist](#pre-flight-checklist)
+4. [Quick start](#quick-start)
+5. [Toggles: UPDATE_* vs deploy_*](#toggles-update_-vs-deploy_)
+6. [Verify success](#verify-success)
+7. [Repository layout](#repository-layout)
+8. [Object storage for observability](#object-storage-for-observability)
+9. [Troubleshooting](#troubleshooting)
+10. [Detailed docs](#detailed-docs)
 
 ---
 
-## Repository layout
-
-| Path | Purpose | Guide |
-|------|---------|--------|
-| [`rhacm/`](rhacm/) | ACM operator, MultiClusterHub, observability | [rhacm/README.md](rhacm/README.md) |
-| [`s4/`](s4/) | In-cluster S3-compatible storage (UI + API) | [s4/README.md](s4/README.md) |
-| [`gitops/`](gitops/) | OpenShift GitOps / Argo CD / ACM clusterset | [gitops/README.md](gitops/README.md) · [acm-clusterset](gitops/acm-clusterset/README.md) |
+## Architecture
 
 ```
-.
-├── rhacm/     # ACM hub + observability
-├── s4/        # S3-compatible storage app
-└── gitops/    # GitOps operator / Argo CD
+update-values.sh  →  patches overlays only
+object storage    →  ready (or deploy_observability=false)
+deploy.yaml       →  RHACM operator → MultiClusterHub → Observability Job + MCO
+                  →  GitOps operator → Argo CD instance
+```
+
+| Stage | What gets installed |
+|-------|---------------------|
+| RHACM operator | Subscription / CSV in `open-cluster-management` |
+| MultiClusterHub | Hub instance (`mch multiclusterhub`) |
+| Observability | Setup Job + `MultiClusterObservability` (optional) |
+| GitOps operator | Subscription / CSV in `openshift-gitops-operator` |
+| Argo CD | Instance in `openshift-gitops` |
+
+---
+
+## Two files you need
+
+| File | Purpose |
+|------|---------|
+| [`update-values.sh`](update-values.sh) | **Only** place to edit channels, catalogs, images (does **not** deploy) |
+| [`deploy.yaml`](deploy.yaml) | **Only** playbook to deploy RHACM and/or GitOps |
+
+```bash
+vim update-values.sh
+./update-values.sh
+ansible-playbook deploy.yaml
 ```
 
 ---
 
-## Prerequisites
+## Pre-flight checklist
 
-| Need | Notes |
-|------|--------|
+| Check | Notes |
+|-------|--------|
 | OpenShift 4.x + cluster-admin | Hub cluster |
-| `oc` | On your PATH |
-| Ansible + `kubernetes.core` | For `deploy-s4.yaml` / `deploy-rhacm.yaml` |
-| Kubeconfig | `$KUBECONFIG` or `~/ocpkubeconfig` |
-| Catalog (RHACM) | `redhat-operators` (connected) or a mirrored catalog (air-gapped) |
-| Object storage (observability) | Default: **S4**. Alternatives: [different S3 store](#using-a-different-s3-store-for-acm-observability) |
-| Infra nodes | RHACM workloads use `node-role.kubernetes.io/infra` |
-
-Create kubeconfig (example):
+| `oc` + Ansible + `kubernetes.core` | Workstation |
+| Kubeconfig | `$KUBECONFIG` or `~/ocpkubeconfig`; `oc whoami` works |
+| Catalog | `redhat-operators` (connected) or mirrored catalog (airgapped) |
+| Infra nodes | `node-role.kubernetes.io/infra` (NoSchedule is enough) |
+| Object storage **or** skip | S4 / AWS / MinIO configured under `rhacm/observability/`, **or** `-e deploy_observability=false` |
+| Edit `update-values.sh` | Channels / catalogs / images match your environment |
+| GitOps admins | Fill `gitops/instance/overlays/connected/gitops-admins-group.yaml` if humans need Argo CD admin |
 
 ```bash
 oc login --server=<api-url> --token=<token>
@@ -53,193 +72,116 @@ oc config view --raw > "$HOME/ocpkubeconfig"
 
 ---
 
-## Suggested deploy order
-
-1. **Object storage** — [Deploy S4](#deploy-s4) (default), or configure another S3 backend  
-2. **RHACM** — [Deploy RHACM](#deploy-rhacm)  
-3. **GitOps** (optional) — see [`gitops/`](gitops/)
-
----
-
-## Deploy S4
-
-Full detail: [s4/README.md](s4/README.md).
-
-S4 provides an S3 API and web UI. ACM observability uses it by default for Thanos.
+## Quick start
 
 ### Configure
 
+1. **TOGGLE** in [`update-values.sh`](update-values.sh) — `UPDATE_RHACM_CONNECTED`, `UPDATE_RHACM_AIRGAPPED`, `UPDATE_GITOPS`
+2. **RHACM / GITOPS** values — channel, catalog, ose-cli image
+3. Run `./update-values.sh`
+
+### Deploy
+
 ```bash
-cd s4
-vim overlays/lab/s4-secret-patch.yaml      # UI + S3 keys (change defaults)
-vim overlays/lab/s4-route-s3-patch.yaml    # S3 API hostname for your cluster
+ansible-playbook deploy.yaml
 ```
 
-### Deploy (Ansible)
+```bash
+ansible-playbook deploy.yaml -e rhacm_overlay=airgapped
+ansible-playbook deploy.yaml -e deploy_observability=false   # ACM hub without object storage
+ansible-playbook deploy.yaml -e deploy_gitops=false
+ansible-playbook deploy.yaml -e deploy_rhacm=false
+ansible-playbook deploy.yaml --tags rhacm
+ansible-playbook deploy.yaml --tags gitops
+```
+
+The playbook does **not** validate S4/S3. That is your responsibility.
+
+### Optional: deploy S4 first
 
 ```bash
 cd s4
-ansible-playbook deploy-s4.yaml \
-  -e s4_bucket_name=loggingstack \
-  -e s4_namespace=s4
-```
-
-### Deploy (`oc` only)
-
-```bash
-cd s4
-oc create namespace s4 --dry-run=client -o yaml | oc apply -f -
-oc apply -k overlays/lab -n s4
-oc rollout status deployment/s4 -n s4 --timeout=600s
-```
-
-### Verify
-
-```bash
-oc get pods,route,pvc -n s4
-oc get route s4 -n s4 -o jsonpath='{.spec.host}{"\n"}'       # UI
-oc get route s4-api -n s4 -o jsonpath='{.spec.host}{"\n"}'   # S3 API
+vim overlays/lab/s4-secret-patch.yaml
+vim overlays/lab/s4-route-s3-patch.yaml
+ansible-playbook deploy-s4.yaml
+cd ..
 ```
 
 ---
 
-## Deploy RHACM
+## Toggles: UPDATE_* vs deploy_*
 
-Full detail: [rhacm/README.md](rhacm/README.md).
+| Flag | Where | Effect |
+|------|--------|--------|
+| `UPDATE_RHACM_CONNECTED` / `UPDATE_RHACM_AIRGAPPED` / `UPDATE_GITOPS` | `update-values.sh` | Which overlays get **patched** |
+| `-e deploy_rhacm=` | `deploy.yaml` | Whether RHACM is **installed** |
+| `-e deploy_observability=` | `deploy.yaml` | Whether observability Job + MCO are applied (default `true`) |
+| `-e deploy_gitops=` | `deploy.yaml` | Whether GitOps is **installed** |
+| `-e rhacm_overlay=` | `deploy.yaml` | `connected` (default) or `airgapped` |
 
-Default path expects **S4 already running** (namespace `s4`, secret `s4-credentials`).
+---
 
-### Full stack (recommended)
-
-Umbrella overlays: `rhacm/overlays/{connected,airgapped}/`  
-(operator + MultiClusterHub + observability).
-
-First install must be **staged** (CRDs appear after the operator). Use Ansible:
-
-```bash
-cd rhacm
-# optional: ./update-rhacm-values-connected.sh
-ansible-playbook deploy-rhacm.yaml                         # connected
-ansible-playbook deploy-rhacm.yaml -e rhacm_overlay=airgapped
-```
-
-Day-2 re-apply (CRDs already present):
+## Verify success
 
 ```bash
-cd rhacm
-oc apply -k overlays/connected/
-```
-
-### Verify
-
-```bash
+# RHACM
 oc get csv,mch -n open-cluster-management
-oc get pods -n open-cluster-management
-oc get mco observability
-```
+oc get mco observability   # if observability was deployed
 
-Manual stage-by-stage commands: [rhacm/README.md](rhacm/README.md).
+# GitOps
+oc get csv -n openshift-gitops-operator
+oc get argocd,route -n openshift-gitops
+oc get group gitops-admins -o yaml   # users should not be empty for human admins
+```
 
 ---
 
-## Using a different S3 store for ACM observability
+## Repository layout
 
-Default: Thanos object storage is filled by the observability setup Job from **S4**.
+```
+.
+├── update-values.sh     # edit all project parameters here
+├── deploy.yaml          # deploy RHACM + GitOps
+├── rhacm/               # ACM kustomize (operator / instance / observability)
+├── gitops/              # GitOps kustomize (operator / instance)
+└── s4/                  # optional in-cluster S3 app
+```
 
-Any S3-compatible backend works (AWS S3, MinIO, NooBaa, Ceph RGW, etc.) if Thanos
-can reach the endpoint and you provide access keys.
-
-### Files to update
-
-| File | Change |
+| Path | Guide |
 |------|--------|
-| [`rhacm/observability/base/01-s4-thanos-config.yaml`](rhacm/observability/base/01-s4-thanos-config.yaml) | Endpoint, bucket, secret name/namespace, insecure flag |
-| [`rhacm/observability/base/02-g-s4-credentials-role.yaml`](rhacm/observability/base/02-g-s4-credentials-role.yaml) | Namespace + Secret `resourceNames` |
-| [`rhacm/observability/base/02-h-s4-credentials-rolebinding.yaml`](rhacm/observability/base/02-h-s4-credentials-rolebinding.yaml) | Same namespace |
-| [`rhacm/observability/base/02-f-observability-setup.yaml`](rhacm/observability/base/02-f-observability-setup.yaml) | Skip S4 bucket-create API if not using S4 |
-| [`rhacm/deploy-rhacm.yaml`](rhacm/deploy-rhacm.yaml) | Soften/remove S4 preflight if S4 is not deployed |
-| *(new)* credentials Secret | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
+| [`rhacm/`](rhacm/) | [rhacm/README.md](rhacm/README.md) |
+| [`gitops/`](gitops/) | [gitops/README.md](gitops/README.md) |
+| [`s4/`](s4/) | [s4/README.md](s4/README.md) |
 
-### How it works today (S4)
+---
 
-| Resource | Role |
-|----------|------|
-| ConfigMap `s4-thanos-config` | Endpoint / bucket / where to read credentials |
-| Secret `s4/s4-credentials` | Access keys (+ UI keys for S4 bucket API) |
-| Job `observability-setup` | Writes Secret `thanos-object-storage` |
-| MultiClusterObservability | Reads `thanos-object-storage` → `thanos.yaml` |
+## Object storage for observability
 
-### Option A — Retarget the setup Job
+Defaults target **S4**. For AWS S3 / MinIO / other S3:
 
-1. Create a credentials Secret (any namespace):
+| File | What |
+|------|------|
+| [`rhacm/observability/base/01-object-storage-config.yaml`](rhacm/observability/base/01-object-storage-config.yaml) | `OBJSTORE_*` endpoint, bucket, secret location; leave `OBJSTORE_API_URL` empty if no management API |
+| [`rhacm/observability/base/02-g-object-storage-credentials-role.yaml`](rhacm/observability/base/02-g-object-storage-credentials-role.yaml) | RBAC namespace/secret must match ConfigMap — **that namespace must already exist** before apply (default `s4`) |
+| [`rhacm/observability/base/02-h-object-storage-credentials-rolebinding.yaml`](rhacm/observability/base/02-h-object-storage-credentials-rolebinding.yaml) | Same |
+| [`rhacm/observability/base/02-f-observability-setup.yaml`](rhacm/observability/base/02-f-observability-setup.yaml) | Creates `thanos-object-storage` Secret |
 
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: my-s3-credentials
-  namespace: my-s3-ns
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: <access-key>
-  AWS_SECRET_ACCESS_KEY: <secret-key>
-```
+Or create Secret `thanos-object-storage` yourself in `open-cluster-management-observability`.
 
-2. Set ConfigMap keys:
+MCO PVCs use the **cluster default StorageClass**. Set `spec.storageConfig.storageClass` in an overlay if the default is unsuitable.
 
-| Key | S4 default | Your value |
-|-----|------------|------------|
-| `S4_NAMESPACE` | `s4` | Credentials Secret namespace |
-| `S4_SECRET_NAME` | `s4-credentials` | Credentials Secret name |
-| `S4_ENDPOINT` | `s4.s4.svc:7480` | S3 host:port (**no** `https://`) |
-| `S4_BUCKET` | `acm-observability` | Bucket name (create it first) |
-| `S4_INSECURE` | `true` | `false` if TLS is valid |
-| `S4_API_URL` | S4 management API | Unused unless Job still creates buckets via S4 |
+---
 
-3. Point RBAC (`02-g` / `02-h`) at that Secret.  
-4. Pre-create the bucket (or keep S4-only bucket-create logic).  
-5. Skip S4 deploy; adjust `deploy-rhacm.yaml` preflight if needed.
+## Troubleshooting
 
-Example (AWS S3, bucket already exists):
-
-```yaml
-data:
-  S4_NAMESPACE: my-s3-ns
-  S4_SECRET_NAME: my-s3-credentials
-  S4_ENDPOINT: s3.us-east-1.amazonaws.com
-  S4_BUCKET: acm-observability
-  S4_INSECURE: "false"
-  S4_API_URL: ""
-```
-
-### Option B — Provide `thanos-object-storage` yourself
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: thanos-object-storage
-  namespace: open-cluster-management-observability
-type: Opaque
-stringData:
-  thanos.yaml: |
-    type: s3
-    config:
-      bucket: acm-observability
-      endpoint: s3.us-east-1.amazonaws.com
-      insecure: false
-      access_key: <access-key>
-      secret_key: <secret-key>
-```
-
-Then skip/disable the Job’s object-store creation (keep pull-secret logic if needed).
-MCO already references this Secret name/key.
-
-### Notes
-
-- Prefer in-cluster DNS for on-cluster stores; use a cloud hostname for AWS/MinIO external.
-- `insecure: false` needs a trusted CA (cluster proxy/CA may be required).
-- MCO **PVC** StorageClass is separate from object storage—patch if the cluster default is wrong.
+| Symptom | Likely cause | What to check |
+|---------|--------------|---------------|
+| Preflight fails | Missing kubeconfig / `oc` | Path, `oc whoami` |
+| CSV never resolves | Catalog / channel / InstallPlan | `oc get sub,ip,csv -n open-cluster-management`; airgapped needs approval |
+| Observability Job timeout | Missing credentials / wrong endpoint | `oc logs -n open-cluster-management-observability job/observability-setup`; ConfigMap `observability-object-storage` |
+| GitOps server Deployment missing | Operator not ready yet | Playbook waits for Deployment existence; `oc get deploy -n openshift-gitops` |
+| PVC Pending | No/wrong default StorageClass | Patch MCO `storageClass` |
+| Argo CD works but no human admin | Empty `gitops-admins` users | Edit overlay Group and re-apply |
 
 ---
 
@@ -247,6 +189,7 @@ MCO already references this Secret name/key.
 
 | Topic | Doc |
 |-------|-----|
-| RHACM overlays, update scripts, troubleshooting | [rhacm/README.md](rhacm/README.md) |
-| S4 architecture and options | [s4/README.md](s4/README.md) |
-| GitOps / ACM clusterset | [gitops/README.md](gitops/README.md) |
+| RHACM overlays | [rhacm/README.md](rhacm/README.md) |
+| GitOps | [gitops/README.md](gitops/README.md) |
+| S4 | [s4/README.md](s4/README.md) |
+| ACM GitOps policies (optional) | [gitops/acm-clusterset/README.md](gitops/acm-clusterset/README.md) |

@@ -1,8 +1,13 @@
-# OpenShift Gitops Components
+# OpenShift GitOps Components
 
-The included components are intended to be common patching patterns used on top of the default OpenShift Gitops instance to configure additional features of ArgoCD.  Components are composable patches that can be added at the overlays layer on top of a base.
+Composable patches applied on top of the default OpenShift GitOps (Argo CD) instance.
 
-This repo currently contains the following components:
+**Active vs library:** components listed under `components:` in
+`instance/overlays/connected/kustomization.yaml` are applied by `deploy.yaml`.
+Other components in this directory are an optional library — add them to the
+overlay when you need them; they are not deleted and are safe to ignore.
+
+## Available components
 
 * [annotation-resource-tracking](annotation-resource-tracking)
 * [application-controller-cluster-admin](application-controller-cluster-admin)
@@ -16,11 +21,9 @@ This repo currently contains the following components:
 
 ## Usage
 
-## Usage
+Add a `components` section to your overlay `kustomization.yaml`:
 
-Components can be added to a base by adding the `components` section to your overlay `kustomization.yaml` file:
-
-```
+```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

@@ -1,3 +1,11 @@
+# ACM clusterset (advanced / optional)
+
+**Not part of `deploy.yaml`.** Use this only if you want ACM governance
+policies to install/configure GitOps across a cluster set. For the main
+hub install, see [../README.md](../README.md) and the root `deploy.yaml`.
+
+---
+
 Installing the "gitops" operator
 
 - Example of creating an ACM governance installing gitops

@@ -3,13 +3,13 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
-  - 01-s4-thanos-config.yaml
+  - 01-object-storage-config.yaml
   - 02-a-observability-role.yaml
   - 02-b-observability-rolebinding.yaml
   - 02-c-openshift-config-role.yaml
   - 02-d-openshift-config-rolebinding.yaml
   - 02-e-observability-sa.yaml
   - 02-f-observability-setup.yaml
-  - 02-g-s4-credentials-role.yaml
-  - 02-h-s4-credentials-rolebinding.yaml
+  - 02-g-object-storage-credentials-role.yaml
+  - 02-h-object-storage-credentials-rolebinding.yaml
   - 03-multiclusterobservability.yaml

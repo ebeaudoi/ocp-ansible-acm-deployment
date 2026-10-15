@@ -1,0 +1,22 @@
+# Object storage settings for Thanos (S4, AWS S3, MinIO, or any S3-compatible store).
+# Create a credentials Secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+# before deploying observability (or leave OBJSTORE_API_URL empty and create the
+# bucket yourself). Leave OBJSTORE_API_URL empty for AWS/MinIO without an S4 UI API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-object-storage
+  namespace: open-cluster-management-observability
+  labels:
+    app.kubernetes.io/name: multicluster-observability
+    app.kubernetes.io/component: thanos-config
+data:
+  # Namespace and name of the credentials Secret (must match RBAC below)
+  OBJSTORE_NAMESPACE: s4
+  OBJSTORE_SECRET_NAME: s4-credentials
+  # S3 API endpoint (host:port, no scheme)
+  OBJSTORE_ENDPOINT: s4.s4.svc:7480
+  OBJSTORE_BUCKET: acm-observability
+  OBJSTORE_INSECURE: "true"
+  # Optional management API to create the bucket (S4 UI). Leave empty to skip.
+  OBJSTORE_API_URL: http://s4.s4.svc:5000/api

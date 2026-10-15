@@ -6,4 +6,5 @@ spec:
   rbac:
     policy: |-
       g, system:cluster-admins, role:admin
+      g, cluster-admins, role:admin
       g, gitops-admins, role:admin

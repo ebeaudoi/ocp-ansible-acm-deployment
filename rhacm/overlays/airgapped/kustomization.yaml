@@ -1,9 +1,12 @@
 # Full RHACM stack for air-gapped clusters: operator + MultiClusterHub + observability.
 #
-# Prerequisite: S4 must already be deployed (namespace s4, secret s4-credentials).
+# Prerequisite (if including observability): object storage credentials ready
+# (see observability/base/01-object-storage-config.yaml), or deploy without
+# observability via: ansible-playbook deploy.yaml -e deploy_observability=false
 #
-# First-time install: ansible-playbook deploy-rhacm.yaml -e rhacm_overlay=airgapped
-# InstallPlan approval is Manual — the script pauses for approval when needed.
+
+# First-time install (repo root): ansible-playbook deploy.yaml -e rhacm_overlay=airgapped
+# Subscription uses Manual InstallPlan approval; deploy.yaml auto-approves on first install.
 #
 # Re-apply after CRDs exist:
 #   oc apply -k overlays/airgapped/

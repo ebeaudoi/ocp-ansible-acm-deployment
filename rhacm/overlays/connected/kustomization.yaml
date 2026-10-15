@@ -1,10 +1,13 @@
 # Full RHACM stack for connected clusters: operator + MultiClusterHub + observability.
 #
-# Prerequisite: S4 must already be deployed (namespace s4, secret s4-credentials).
+# Prerequisite (if including observability): object storage credentials ready
+# (see observability/base/01-object-storage-config.yaml), or deploy without
+# observability via: ansible-playbook deploy.yaml -e deploy_observability=false
 #
+
 # First-time install: do NOT rely on a single `oc apply -k` alone — MultiClusterHub
 # and MultiClusterObservability CRDs appear only after the operator/MCH are ready.
-# Use: ansible-playbook deploy-rhacm.yaml  (staged apply with waits).
+# Use from repo root: ansible-playbook deploy.yaml --tags rhacm
 #
 # Re-apply / drift sync after CRDs exist:
 #   oc apply -k overlays/connected/

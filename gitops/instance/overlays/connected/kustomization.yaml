@@ -13,3 +13,11 @@ components:
   - ../../components/gitops-admins
   - ../../components/health-check-olm
   - ../../components/health-check-openshift-builds
+
+# Edit gitops-admins-group.yaml to add OpenShift users who should admin Argo CD.
+# Until then the Group has users: [] and humans cannot admin via that group.
+patches:
+  - path: gitops-admins-group.yaml
+    target:
+      kind: Group
+      name: gitops-admins

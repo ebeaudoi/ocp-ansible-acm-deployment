@@ -1,107 +1,85 @@
-# GitOps Operator
+# OpenShift GitOps
 
-Deploy and manage the OpenShift GitOps operator (ArgoCD) in air-gapped environments using Kustomize.
+Kustomize manifests for the OpenShift GitOps operator and Argo CD instance.
+
+## Purpose
+
+Install OpenShift GitOps: operator → Argo CD instance (with optional component patches).
+
+## From repo root
+
+| File | Role |
+|------|------|
+| [`../update-values.sh`](../update-values.sh) | Patch GitOps channel / catalog (`UPDATE_GITOPS`) |
+| [`../deploy.yaml`](../deploy.yaml) | Deploy GitOps (`-e deploy_gitops`) |
+
+```bash
+cd ..   # repo root
+vim update-values.sh && ./update-values.sh
+ansible-playbook deploy.yaml --tags gitops
+```
+
+## Overlays
+
+| Overlay | Path | Notes |
+|---------|------|--------|
+| Operator `connected` | `operator/overlays/connected/` | Catalog/channel (same naming as RHACM) |
+| Instance `connected` | `instance/overlays/connected/` | Argo CD + active components |
+
+## What each folder does
+
+| Path | Role |
+|------|------|
+| `operator/` | GitOps Subscription in `openshift-gitops-operator` |
+| `instance/` | Argo CD CR + component patches |
+| `instance/components/` | Library of patches — only those listed in the overlay are active |
+| `acm-clusterset/` | **Advanced / optional** ACM PolicyGenerator — **not** part of `deploy.yaml` |
+
+### gitops-admins (important)
+
+The `gitops-admins` Group starts with `users: []`. Deploy succeeds, but **no human** has Argo CD admin via that group until you add users in:
+
+`instance/overlays/connected/gitops-admins-group.yaml`
 
 ## Prerequisites
 
-- **OpenShift CLI (`oc`)**: Version 4.x or later
-- **Cluster Access**: Admin access to the OpenShift cluster
-- **Air-Gapped Environment**: Access to internal registry with GitOps operator images
-- **Catalog Source**: Red Hat catalog source configured in the cluster
-- **Infrastructure Nodes**: GitOps operator should be deployed on infrastructure nodes
+- OpenShift 4.x, cluster-admin, `oc`
+- Catalog (`redhat-operators` or a mirror)
+- Infra nodes — Subscription sets `nodeSelector` / tolerations
 
-## Update Script
-
-The **`update-gitops-values.sh`** script automates the update of GitOps operator configuration files.
-
-### Usage
-
-1. **Edit the script** to set your values:
+## Manual apply (debug)
 
 ```bash
 cd gitops
-vim update-gitops-values.sh
+oc apply -k operator/overlays/connected/
+# wait for CSV Succeeded in openshift-gitops-operator
+oc apply -k instance/overlays/connected/
+oc rollout status deployment/openshift-gitops-server -n openshift-gitops
 ```
 
-2. **Update the variables**:
-
-```bash
-GITOPS_SUBSCRIPTION_CHANNEL="latest"
-GITOPS_CATALOG_SOURCE="your-redhat-catalog"
-# GITOPS_GIT_USER="admin"  # Uncomment if needed
-```
-
-3. **Run the script**:
-
-```bash
-./update-gitops-values.sh
-```
-
-The script will:
-- Create timestamped backups of all kustomization files
-- Update operator subscription channel and catalog source
-- Display a summary of all changes
-
-## Deployment Steps
-
-### 1. Deploy GitOps Operator
-
-```bash
-oc apply -k operator/overlays/infra/
-```
-
-### 2. Monitor Operator Installation
-
-```bash
-oc get pods -w -n openshift-gitops-operator
-```
-
-Wait for all operator pods to be in `Running` state.
-
-### 3. Deploy GitOps Instance (Optional)
-
-```bash
-oc apply -k example-instance/overlays/airgapped/
-```
-
-### 4. Verify Deployment
-
-```bash
-# Check operator status
-oc get csv -n openshift-gitops-operator
-
-# Check default ArgoCD instance
-oc get pods -n openshift-gitops
-
-# Access ArgoCD console
-oc get route -n openshift-gitops
-```
-
-## Directory Structure
+## Layout
 
 ```
 gitops/
 ├── operator/
-│   ├── base/                    # Base operator configuration
-│   │   ├── subscription.yaml
-│   │   └── kustomization.yaml
-│   ├── components/              # Operator components
-│   │   └── openshift-gitops-operator/
-│   └── overlays/
-│       └── infra/               # Infrastructure node overlay
-│           └── kustomization.yaml
-├── example-instance/
-│   ├── base/                    # Base GitOps instance
-│   ├── components/              # Instance components
-│   └── overlays/
-│       └── airgapped/           # Air-gapped instance overlay
-│           └── kustomization.yaml
-└── update-gitops-values.sh     # Configuration update script
+│   ├── base/
+│   ├── components/openshift-gitops-operator/
+│   └── overlays/connected/
+├── instance/
+│   ├── base/
+│   ├── components/          # optional library + overlay-selected set
+│   └── overlays/connected/
+└── acm-clusterset/          # advanced ACM policies (separate from deploy.yaml)
 ```
 
 ## Troubleshooting
 
-- **Operator not installing**: Verify catalog source is accessible and channel exists
-- **ArgoCD not accessible**: Check route configuration and network policies
-- **Git repository access**: Ensure Git repositories are accessible from the cluster
+| Symptom | Check |
+|---------|--------|
+| CSV never Succeeded | Catalog / channel |
+| `openshift-gitops-server` missing | Wait for operator to create Deployments; `oc get deploy -n openshift-gitops` |
+| No Argo CD admin for humans | Fill `gitops-admins-group.yaml` users |
 
+## ACM clusterset (optional)
+
+See [acm-clusterset/README.md](acm-clusterset/README.md). Not required for `deploy.yaml`.

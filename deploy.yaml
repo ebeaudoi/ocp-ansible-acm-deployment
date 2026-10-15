@@ -1,0 +1,504 @@
+---
+##############################################################################
+# deploy.yaml — deploy RHACM and OpenShift GitOps
+#
+# BEFORE YOU RUN
+#   1. Edit parameters in:  ./update-values.sh   (patches overlays only)
+#   2. Run:                 ./update-values.sh
+#   3. If deploying observability: configure object storage under
+#      rhacm/observability/ (S4, AWS S3, MinIO, etc.)
+#      OR set:  -e deploy_observability=false
+#
+# HOW TO RUN (from repo root)
+#   ansible-playbook deploy.yaml
+#   ansible-playbook deploy.yaml -e rhacm_overlay=airgapped
+#   ansible-playbook deploy.yaml -e deploy_gitops=false
+#   ansible-playbook deploy.yaml -e deploy_rhacm=false
+#   ansible-playbook deploy.yaml -e deploy_observability=false
+#   ansible-playbook deploy.yaml --tags rhacm
+#   ansible-playbook deploy.yaml --tags gitops
+#
+# Kubeconfig: $KUBECONFIG  or  ~/ocpkubeconfig
+# This playbook does NOT validate S4/S3 — that is your responsibility.
+##############################################################################
+
+- name: Deploy RHACM and OpenShift GitOps
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # ------------------------------------------------------------------
+    # Paths
+    # ------------------------------------------------------------------
+    kubeconfig_path: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') ~ '/ocpkubeconfig', true) }}"
+    rhacm_root: "{{ playbook_dir }}/rhacm"
+    gitops_root: "{{ playbook_dir }}/gitops"
+
+    # ------------------------------------------------------------------
+    # What to deploy  (override with -e)
+    # ------------------------------------------------------------------
+    deploy_rhacm: true
+    deploy_observability: true
+    deploy_gitops: true
+
+    # ------------------------------------------------------------------
+    # RHACM overlay: connected | airgapped
+    # ------------------------------------------------------------------
+    rhacm_overlay: "{{ lookup('env', 'RHACM_OVERLAY') | default('connected', true) }}"
+
+    # ------------------------------------------------------------------
+    # Namespaces / resource names (usually leave as-is)
+    # ------------------------------------------------------------------
+    ocm_namespace: open-cluster-management
+    ocm_obs_namespace: open-cluster-management-observability
+    gitops_operator_namespace: openshift-gitops-operator
+    gitops_instance_namespace: openshift-gitops
+    gitops_subscription_name: openshift-gitops-operator
+    gitops_instance_overlay: connected
+    gitops_operator_overlay: connected
+
+  tasks:
+
+    # ==================================================================
+    # Preflight
+    # ==================================================================
+    - name: Check RHACM overlay name
+      ansible.builtin.assert:
+        that: rhacm_overlay in ['connected', 'airgapped']
+        fail_msg: "rhacm_overlay must be 'connected' or 'airgapped'"
+      tags: [always]
+
+    - name: Preflight | kubeconfig file exists
+      ansible.builtin.stat:
+        path: "{{ kubeconfig_path }}"
+      register: kubeconfig_stat
+      tags: [always]
+
+    - name: Preflight | fail if kubeconfig missing
+      ansible.builtin.fail:
+        msg: >-
+          Kubeconfig not found at {{ kubeconfig_path }}.
+          Set KUBECONFIG or create ~/ocpkubeconfig
+          (oc login … && oc config view --raw > ~/ocpkubeconfig).
+      when: not kubeconfig_stat.stat.exists
+      tags: [always]
+
+    - name: Preflight | oc can reach the cluster
+      ansible.builtin.command:
+        cmd: oc whoami --kubeconfig {{ kubeconfig_path }}
+      register: oc_whoami
+      changed_when: false
+      failed_when: oc_whoami.rc != 0
+      tags: [always]
+
+    - name: Preflight | RHACM overlay directories exist
+      ansible.builtin.stat:
+        path: "{{ rhacm_root }}/operator/overlays/{{ rhacm_overlay }}"
+      register: rhacm_overlay_dir
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: Preflight | fail if RHACM overlay path missing
+      ansible.builtin.fail:
+        msg: "Missing {{ rhacm_root }}/operator/overlays/{{ rhacm_overlay }}"
+      when:
+        - deploy_rhacm | bool
+        - not rhacm_overlay_dir.stat.exists
+      tags: [rhacm]
+
+    - name: Preflight | GitOps overlay directories exist
+      ansible.builtin.stat:
+        path: "{{ gitops_root }}/operator/overlays/{{ gitops_operator_overlay }}"
+      register: gitops_overlay_dir
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: Preflight | fail if GitOps overlay path missing
+      ansible.builtin.fail:
+        msg: "Missing {{ gitops_root }}/operator/overlays/{{ gitops_operator_overlay }}"
+      when:
+        - deploy_gitops | bool
+        - not gitops_overlay_dir.stat.exists
+      tags: [gitops]
+
+    - name: Show deploy plan
+      ansible.builtin.debug:
+        msg: |
+          Kubeconfig     : {{ kubeconfig_path }} (user={{ oc_whoami.stdout }})
+          RHACM          : {{ deploy_rhacm }}  (overlay={{ rhacm_overlay }})
+          Observability  : {{ deploy_observability }}  (requires object storage when true)
+          GitOps         : {{ deploy_gitops }}
+      tags: [always]
+
+    # ==================================================================
+    # RHACM — 1) Operator
+    # ==================================================================
+    - name: RHACM | Render operator manifests
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ rhacm_root }}/operator/overlays/{{ rhacm_overlay }}"
+      register: rhacm_operator_yaml
+      changed_when: false
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Apply operator
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ rhacm_operator_yaml.stdout | from_yaml_all | list }}"
+        state: present
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Wait for InstallPlan
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: InstallPlan
+        namespace: "{{ ocm_namespace }}"
+      register: rhacm_ips
+      until: rhacm_ips.resources | length > 0
+      retries: 90
+      delay: 10
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Approve InstallPlan (airgapped only)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: InstallPlan
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ ocm_namespace }}"
+        merge_type: merge
+        definition:
+          spec:
+            approved: true
+      loop: "{{ rhacm_ips.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      when:
+        - deploy_rhacm | bool
+        - rhacm_overlay == 'airgapped'
+        - not (item.spec.approved | default(false))
+      tags: [rhacm]
+
+    - name: RHACM | Wait until Subscription has a CSV
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        name: acm-operator-subscription
+        namespace: "{{ ocm_namespace }}"
+      register: acm_sub
+      until: >
+        acm_sub.resources | length > 0 and (
+          (acm_sub.resources[0].status.installedCSV | default('') | length > 0) or
+          (acm_sub.resources[0].status.currentCSV | default('') | length > 0)
+        )
+      retries: 90
+      delay: 10
+      ignore_errors: true
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Tip if Subscription never resolves a CSV
+      ansible.builtin.fail:
+        msg: >-
+          RHACM Subscription never resolved a CSV.
+          Tip: oc get sub,ip,csv -n {{ ocm_namespace }};
+          oc describe sub acm-operator-subscription -n {{ ocm_namespace }}
+      when:
+        - deploy_rhacm | bool
+        - acm_sub is failed
+      tags: [rhacm]
+
+    - name: RHACM | Remember CSV name
+      ansible.builtin.set_fact:
+        acm_csv_name: >-
+          {{ acm_sub.resources[0].status.installedCSV
+             | default(acm_sub.resources[0].status.currentCSV, true) }}
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Wait until CSV is Succeeded
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        name: "{{ acm_csv_name }}"
+        namespace: "{{ ocm_namespace }}"
+      register: acm_csv
+      until: >
+        acm_csv.resources | length > 0 and
+        (acm_csv.resources[0].status.phase | default('')) == 'Succeeded'
+      retries: 90
+      delay: 10
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    # ==================================================================
+    # RHACM — 2) MultiClusterHub instance
+    # ==================================================================
+    - name: RHACM | Wait for MultiClusterHub CRD
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: multiclusterhubs.operator.open-cluster-management.io
+      register: mch_crd
+      until: mch_crd.resources | length > 0
+      retries: 60
+      delay: 5
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Render instance manifests
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ rhacm_root }}/instance/overlays/{{ rhacm_overlay }}"
+      register: rhacm_instance_yaml
+      changed_when: false
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Apply MultiClusterHub
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ rhacm_instance_yaml.stdout | from_yaml_all | list }}"
+        state: present
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    - name: RHACM | Wait until MultiClusterHub is Running
+      ansible.builtin.command:
+        cmd: >-
+          oc wait mch multiclusterhub -n {{ ocm_namespace }}
+          --for=jsonpath='{.status.phase}'=Running
+          --timeout=1800s
+          --kubeconfig {{ kubeconfig_path }}
+      changed_when: false
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    # ==================================================================
+    # RHACM — 3) Observability (optional)
+    # ==================================================================
+    - name: RHACM | Wait for MultiClusterObservability CRD
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: multiclusterobservabilities.observability.open-cluster-management.io
+      register: mco_crd
+      until: mco_crd.resources | length > 0
+      retries: 60
+      delay: 5
+      when:
+        - deploy_rhacm | bool
+        - deploy_observability | bool
+      tags: [rhacm]
+
+    - name: RHACM | Render observability manifests
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ rhacm_root }}/observability/overlays/{{ rhacm_overlay }}"
+      register: rhacm_obs_yaml
+      changed_when: false
+      when:
+        - deploy_rhacm | bool
+        - deploy_observability | bool
+      tags: [rhacm]
+
+    - name: RHACM | Apply observability
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ rhacm_obs_yaml.stdout | from_yaml_all | list }}"
+        state: present
+      when:
+        - deploy_rhacm | bool
+        - deploy_observability | bool
+      tags: [rhacm]
+
+    - name: RHACM | Wait for observability-setup Job
+      ansible.builtin.command:
+        cmd: >-
+          oc wait job/observability-setup
+          -n {{ ocm_obs_namespace }}
+          --for=condition=complete
+          --timeout=600s
+          --kubeconfig {{ kubeconfig_path }}
+      register: obs_job_wait
+      changed_when: false
+      ignore_errors: true
+      when:
+        - deploy_rhacm | bool
+        - deploy_observability | bool
+      tags: [rhacm]
+
+    - name: RHACM | Tip if observability Job timed out
+      ansible.builtin.fail:
+        msg: >-
+          observability-setup Job did not complete.
+          Tip: oc logs -n {{ ocm_obs_namespace }} job/observability-setup;
+          oc get cm observability-object-storage -n {{ ocm_obs_namespace }} -o yaml;
+          Or skip with -e deploy_observability=false
+      when:
+        - deploy_rhacm | bool
+        - deploy_observability | bool
+        - obs_job_wait is failed
+      tags: [rhacm]
+
+    - name: RHACM | Done
+      ansible.builtin.debug:
+        msg: >-
+          RHACM finished (overlay={{ rhacm_overlay }}, observability={{ deploy_observability }}).
+          Check: oc get csv,mch -n {{ ocm_namespace }}
+      when: deploy_rhacm | bool
+      tags: [rhacm]
+
+    # ==================================================================
+    # GitOps — 1) Operator
+    # ==================================================================
+    - name: GitOps | Render operator manifests
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ gitops_root }}/operator/overlays/{{ gitops_operator_overlay }}"
+      register: gitops_operator_yaml
+      changed_when: false
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Apply operator
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ gitops_operator_yaml.stdout | from_yaml_all | list }}"
+        state: present
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Wait for InstallPlan
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: InstallPlan
+        namespace: "{{ gitops_operator_namespace }}"
+      register: gitops_ips
+      until: gitops_ips.resources | length > 0
+      retries: 90
+      delay: 10
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Wait until Subscription has a CSV
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        name: "{{ gitops_subscription_name }}"
+        namespace: "{{ gitops_operator_namespace }}"
+      register: gitops_sub
+      until: >
+        gitops_sub.resources | length > 0 and (
+          (gitops_sub.resources[0].status.installedCSV | default('') | length > 0) or
+          (gitops_sub.resources[0].status.currentCSV | default('') | length > 0)
+        )
+      retries: 90
+      delay: 10
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Remember CSV name
+      ansible.builtin.set_fact:
+        gitops_csv_name: >-
+          {{ gitops_sub.resources[0].status.installedCSV
+             | default(gitops_sub.resources[0].status.currentCSV, true) }}
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Wait until CSV is Succeeded
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        name: "{{ gitops_csv_name }}"
+        namespace: "{{ gitops_operator_namespace }}"
+      register: gitops_csv
+      until: >
+        gitops_csv.resources | length > 0 and
+        (gitops_csv.resources[0].status.phase | default('')) == 'Succeeded'
+      retries: 90
+      delay: 10
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    # ==================================================================
+    # GitOps — 2) Argo CD instance
+    # ==================================================================
+    - name: GitOps | Wait for ArgoCD CRD
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: argocds.argoproj.io
+      register: argocd_crd
+      until: argocd_crd.resources | length > 0
+      retries: 60
+      delay: 5
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Render instance manifests
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ gitops_root }}/instance/overlays/{{ gitops_instance_overlay }}"
+      register: gitops_instance_yaml
+      changed_when: false
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Apply Argo CD instance
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ gitops_instance_yaml.stdout | from_yaml_all | list }}"
+        state: present
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Wait until openshift-gitops-server Deployment exists
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apps/v1
+        kind: Deployment
+        name: openshift-gitops-server
+        namespace: "{{ gitops_instance_namespace }}"
+      register: gitops_server_deploy
+      until: gitops_server_deploy.resources | length > 0
+      retries: 60
+      delay: 10
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Wait for openshift-gitops-server rollout
+      ansible.builtin.command:
+        cmd: >-
+          oc rollout status deployment/openshift-gitops-server
+          -n {{ gitops_instance_namespace }}
+          --kubeconfig {{ kubeconfig_path }}
+          --timeout=600s
+      changed_when: false
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    - name: GitOps | Done
+      ansible.builtin.debug:
+        msg: >-
+          GitOps finished.
+          Check: oc get csv -n {{ gitops_operator_namespace }};
+          oc get argocd,route -n {{ gitops_instance_namespace }}.
+          Remember: gitops-admins Group users:[] until you add users.
+      when: deploy_gitops | bool
+      tags: [gitops]
+
+    # ==================================================================
+    # Finish
+    # ==================================================================
+    - name: Deploy finished
+      ansible.builtin.debug:
+        msg: "All done. RHACM={{ deploy_rhacm }} observability={{ deploy_observability }} GitOps={{ deploy_gitops }}"
+      tags: [always]
