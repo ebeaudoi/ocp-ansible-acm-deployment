@@ -4,6 +4,11 @@ S4 deploys a lightweight S3-compatible storage stack (RGW-backed UI + S3 API) in
 an OpenShift cluster using Kustomize, with an optional Ansible playbook that
 applies the manifests and creates an initial bucket.
 
+RHACM observability (see [`rhacm/observability`](../rhacm/observability)) uses the
+in-cluster S3 Service (`s4.s4.svc:7480`) and credentials from `s4-credentials` to
+store Thanos metrics in bucket `acm-observability` (created by the observability
+setup Job if missing). Deploy S4 before applying the observability overlay.
+
 Image: `quay.io/rh-aiservices-bu/s4:latest`
 
 ## Architecture
@@ -65,11 +70,24 @@ Optional / unused in the current build (not listed in `base/kustomization.yaml`)
 ## Prerequisites
 
 - OpenShift cluster with a default StorageClass (or edit the PVC)
-- `oc` logged in (or a kubeconfig file)
-- For Ansible deploy:
-  - Ansible with `kubernetes.core` collection
-  - `oc` on `PATH`
-  - Kubeconfig at `$KUBECONFIG`, or `~/ocpkubeconfig` if unset
+- `oc` on `PATH`
+- For Ansible deploy: Ansible with the `kubernetes.core` collection
+- Cluster kubeconfig at `$HOME/ocpkubeconfig` (see below)
+
+### Create kubeconfig
+
+Authenticate to the cluster, then write a standalone kubeconfig for the playbook
+(defaults to `$HOME/ocpkubeconfig` when `KUBECONFIG` is unset):
+
+```bash
+oc login --server=<api-url> --token=<token>
+oc config view --raw > "$HOME/ocpkubeconfig"
+```
+
+Replace `<api-url>` with the OpenShift API URL (for example
+`https://api.cluster.example.com:6443`) and `<token>` with a token from the
+OpenShift console (Copy login command) or `oc whoami -t` after an interactive
+login.
 
 ## Configure before deploy
 
@@ -124,10 +142,13 @@ Then deploy with `S4_OVERLAY=prod` or `-e s4_overlay=prod`.
 From this directory (`s4/` at the repo root):
 
 ```bash
+# Ensure kubeconfig exists (see Prerequisites)
+oc login --server=<api-url> --token=<token>
+oc config view --raw > "$HOME/ocpkubeconfig"
+
 cd s4
 
-# Optional overrides
-export KUBECONFIG=~/ocpkubeconfig
+# Optional: choose overlay (default lab)
 export S4_OVERLAY=lab
 
 ansible-playbook deploy-s4.yaml \
@@ -211,12 +232,15 @@ aws --endpoint-url https://$(oc get route s4-api -n s4 -o jsonpath='{.spec.host}
 | Single replica only | Info | Expected with RWO; HA would need RWX + app support |
 
 The Ansible playbook path was corrected to render `overlays/<name>` relative to
-this folder (`playbook_dir`), and kubeconfig resolution prefers `$KUBECONFIG`.
+this folder (`playbook_dir`). Kubeconfig resolution uses `$KUBECONFIG` if set,
+otherwise `$HOME/ocpkubeconfig`.
 
 ## Troubleshooting
 
 - **PVC Pending**: Check default StorageClass / capacity; edit `base/s4-pvc.yaml`
 - **ImagePullBackOff**: Ensure the cluster can pull `quay.io/rh-aiservices-bu/s4` (or mirror it)
 - **Route host rejected**: Align `s4-route-s3-patch.yaml` with the cluster apps domain
-- **Ansible cannot find kubeconfig**: Set `KUBECONFIG` or place a kubeconfig at `~/ocpkubeconfig`
+- **Ansible cannot find kubeconfig**: Create `$HOME/ocpkubeconfig` with:
+  `oc login --server=<api-url> --token=<token>` then
+  `oc config view --raw > "$HOME/ocpkubeconfig"`
 - **Bucket create 401**: Confirm `UI_USERNAME` / `UI_PASSWORD` in the overlay secret match what the pod loaded (restart if you changed the Secret)
