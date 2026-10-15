@@ -19,5 +19,4 @@ spec:
     components:
     - name: console
       enabled: true
-  # Basic = single-replica hub components. Use components/ha-availability for High.
   availabilityConfig: Basic

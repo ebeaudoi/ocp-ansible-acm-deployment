@@ -133,13 +133,6 @@ oc wait mch multiclusterhub -n open-cluster-management \
   --for=jsonpath='{.status.phase}'=Running --timeout=1200s
 ```
 
-For multi-replica hub components, add the HA component to the instance overlay:
-
-```yaml
-components:
-  - ../../components/ha-availability
-```
-
 ### 4. Deploy Observability (Optional)
 
 Requires **S4** running in namespace `s4` (see [s4/README.md](../s4/README.md)).
@@ -158,9 +151,6 @@ oc get mco observability
 The setup Job reads `s4/s4-credentials`, ensures bucket `acm-observability`
 exists on S4, and writes the `thanos-object-storage` Secret. Endpoint and bucket
 are set in `observability/base/01-s4-thanos-config.yaml`.
-
-To override PVC sizes, enable `observability/components/odf-storage-sizes` in the
-overlay and edit the values there.
 
 ### 5. Verify
 
@@ -187,15 +177,11 @@ rhacm/
 │       └── connected/
 ├── instance/
 │   ├── base/
-│   ├── components/
-│   │   └── ha-availability/     # Optional availabilityConfig: High
 │   └── overlays/
 │       ├── airgapped/
 │       └── connected/
 ├── observability/
 │   ├── base/
-│   ├── components/
-│   │   └── odf-storage-sizes/   # Optional PVC size overrides
 │   └── overlays/
 │       ├── airgapped/
 │       └── connected/
