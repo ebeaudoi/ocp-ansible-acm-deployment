@@ -18,9 +18,37 @@ Kustomize. Overlays support **air-gapped** and **connected** clusters.
   (including MCE `mce-subscription-spec` config), MultiClusterObservability, and
   the observability setup Job. Namespaces do **not** use
   `openshift.io/node-selector` or `scheduler.alpha.kubernetes.io/defaultTolerations`.
-- **S4 (observability only)**: Deploy [`s4/`](../s4/) first (`deploy-s4.yaml`).
-  Observability stores Thanos metrics in an S4 S3 bucket (`acm-observability` by
-  default) via the in-cluster Service `s4.s4.svc:7480`
+- **S4 (required before ACM with observability)**: Deploy [`s4/`](../s4/) first
+  (`deploy-s4.yaml`). Observability stores Thanos metrics in an S4 S3 bucket
+  (`acm-observability` by default) via the in-cluster Service `s4.s4.svc:7480`
+
+## Full-stack deploy (recommended)
+
+One umbrella kustomization composes operator + instance + observability:
+
+| Overlay | Path |
+|---------|------|
+| Connected | [`overlays/connected/`](overlays/connected/) |
+| Air-gapped | [`overlays/airgapped/`](overlays/airgapped/) |
+
+A single `oc apply -k overlays/<env>/` declares the full desired state, but
+**first-time install must be staged**: `MultiClusterHub` and
+`MultiClusterObservability` CRDs only exist after the operator/MCH are ready.
+Use the Ansible playbook (checks S4, applies in order, waits):
+
+```bash
+cd rhacm
+# Optional: export KUBECONFIG or use ~/ocpkubeconfig (same as s4)
+ansible-playbook deploy-rhacm.yaml                         # connected (default)
+ansible-playbook deploy-rhacm.yaml -e rhacm_overlay=airgapped
+# or: RHACM_OVERLAY=airgapped ansible-playbook deploy-rhacm.yaml
+```
+
+After CRDs exist (day-2 / re-apply):
+
+```bash
+oc apply -k overlays/connected/
+```
 
 ## Update Scripts
 
@@ -61,9 +89,12 @@ RHACM_OSE_CLI_IMAGE="registry.example.com/openshift4/ose-cli@sha256:..."
 ./update-rhacm-values.sh
 ```
 
-## Deployment Steps
+## Deployment Steps (manual / staged)
 
-Set `OVERLAY` to `connected` or `airgapped` for the examples below.
+Prefer [`deploy-rhacm.yaml`](deploy-rhacm.yaml) for a full install. The steps below
+are the same flow broken out for debugging.
+
+Set `OVERLAY` to `connected` or `airgapped`:
 
 ```bash
 export OVERLAY=connected   # or: airgapped
@@ -144,6 +175,9 @@ oc get pods -n open-cluster-management-observability   # if deployed
 
 ```
 rhacm/
+├── overlays/                    # Full stack (operator + instance + observability)
+│   ├── connected/
+│   └── airgapped/
 ├── operator/
 │   ├── base/
 │   ├── components/
@@ -165,6 +199,7 @@ rhacm/
 │   └── overlays/
 │       ├── airgapped/
 │       └── connected/
+├── deploy-rhacm.yaml                   # Ansible staged full deploy (checks S4)
 ├── update-rhacm-values.sh              # air-gapped
 ├── update-rhacm-values-connected.sh    # connected
 └── .gitignore

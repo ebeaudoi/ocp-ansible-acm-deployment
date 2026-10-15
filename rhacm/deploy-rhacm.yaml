@@ -1,0 +1,227 @@
+---
+# Deploy full RHACM stack (operator + MultiClusterHub + observability)
+# with staged applies and waits.
+#
+# Prerequisite: S4 must already be deployed (namespace s4, secret s4-credentials).
+#
+# Usage:
+#   ansible-playbook deploy-rhacm.yaml
+#   ansible-playbook deploy-rhacm.yaml -e rhacm_overlay=airgapped
+#   RHACM_OVERLAY=airgapped ansible-playbook deploy-rhacm.yaml
+#
+- name: Deploy RHACM
+  hosts: localhost
+  gather_facts: false
+  vars:
+    kubeconfig_path: "{{ lookup('env', 'KUBECONFIG') | default(lookup('env', 'HOME') ~ '/ocpkubeconfig', true) }}"
+    rhacm_root: "{{ playbook_dir }}"
+    # Overlay: connected (default) or airgapped. Override with -e or env RHACM_OVERLAY.
+    rhacm_overlay: "{{ lookup('env', 'RHACM_OVERLAY') | default('connected', true) }}"
+    s4_namespace: s4
+    ocm_namespace: open-cluster-management
+    ocm_obs_namespace: open-cluster-management-observability
+
+  tasks:
+    - name: Validate rhacm_overlay
+      ansible.builtin.assert:
+        that:
+          - rhacm_overlay in ['connected', 'airgapped']
+        fail_msg: "rhacm_overlay must be 'connected' or 'airgapped' (got '{{ rhacm_overlay }}')"
+
+    - name: Display deploy configuration
+      ansible.builtin.debug:
+        msg:
+          - "Overlay: {{ rhacm_overlay }}"
+          - "Kubeconfig: {{ kubeconfig_path }}"
+          - "RHACM root: {{ rhacm_root }}"
+
+    ################################################################
+    # Preflight: S4
+    ################################################################
+    - name: "Preflight - ensure S4 namespace exists"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: v1
+        kind: Namespace
+        name: "{{ s4_namespace }}"
+      register: s4_ns
+
+    - name: "Preflight - fail if S4 namespace is missing"
+      ansible.builtin.fail:
+        msg: "Namespace '{{ s4_namespace }}' not found. Deploy S4 first (../s4/deploy-s4.yaml)."
+      when: s4_ns.resources | length == 0
+
+    - name: "Preflight - ensure S4 credentials Secret exists"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: v1
+        kind: Secret
+        name: s4-credentials
+        namespace: "{{ s4_namespace }}"
+      register: s4_secret
+
+    - name: "Preflight - fail if S4 credentials Secret is missing"
+      ansible.builtin.fail:
+        msg: "Secret '{{ s4_namespace }}/s4-credentials' not found. Deploy S4 first."
+      when: s4_secret.resources | length == 0
+
+    - name: "Preflight - ensure S4 Deployment exists"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apps/v1
+        kind: Deployment
+        name: s4
+        namespace: "{{ s4_namespace }}"
+      register: s4_deploy
+
+    - name: "Preflight - fail if S4 Deployment is missing"
+      ansible.builtin.fail:
+        msg: "Deployment '{{ s4_namespace }}/s4' not found. Deploy S4 first."
+      when: s4_deploy.resources | length == 0
+
+    - name: "Preflight - wait for S4 Deployment rollout"
+      ansible.builtin.command:
+        cmd: >-
+          oc rollout status deployment/s4
+          -n {{ s4_namespace }}
+          --kubeconfig {{ kubeconfig_path }}
+          --timeout=120s
+      changed_when: false
+
+    ################################################################
+    # 1. Operator
+    ################################################################
+    - name: "Render operator overlay ({{ rhacm_overlay }})"
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ rhacm_root }}/operator/overlays/{{ rhacm_overlay }}"
+      register: operator_manifests
+      changed_when: false
+
+    - name: "Apply operator overlay ({{ rhacm_overlay }})"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ operator_manifests.stdout | from_yaml_all | list }}"
+        state: present
+
+    - name: "Airgapped - wait for InstallPlan"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: InstallPlan
+        namespace: "{{ ocm_namespace }}"
+      register: installplans
+      until: installplans.resources | length > 0
+      retries: 60
+      delay: 5
+      when: rhacm_overlay == 'airgapped'
+
+    - name: "Airgapped - approve InstallPlan"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: InstallPlan
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ ocm_namespace }}"
+        merge_type: merge
+        definition:
+          spec:
+            approved: true
+      loop: "{{ installplans.resources }}"
+      when:
+        - rhacm_overlay == 'airgapped'
+        - not (item.spec.approved | default(false))
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Wait for ACM ClusterServiceVersion Succeeded
+      ansible.builtin.command:
+        cmd: >-
+          oc wait csv -n {{ ocm_namespace }}
+          -l operators.coreos.com/advanced-cluster-management.open-cluster-management
+          --for=jsonpath='{.status.phase}'=Succeeded
+          --timeout=900s
+          --kubeconfig {{ kubeconfig_path }}
+      changed_when: false
+
+    ################################################################
+    # 2. MultiClusterHub instance
+    ################################################################
+    - name: Wait for MultiClusterHub CRD
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: multiclusterhubs.operator.open-cluster-management.io
+      register: mch_crd
+      until: mch_crd.resources | length > 0
+      retries: 60
+      delay: 5
+
+    - name: "Render instance overlay ({{ rhacm_overlay }})"
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ rhacm_root }}/instance/overlays/{{ rhacm_overlay }}"
+      register: instance_manifests
+      changed_when: false
+
+    - name: "Apply instance overlay ({{ rhacm_overlay }})"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ instance_manifests.stdout | from_yaml_all | list }}"
+        state: present
+
+    - name: Wait for MultiClusterHub Running
+      ansible.builtin.command:
+        cmd: >-
+          oc wait mch multiclusterhub -n {{ ocm_namespace }}
+          --for=jsonpath='{.status.phase}'=Running
+          --timeout=1800s
+          --kubeconfig {{ kubeconfig_path }}
+      changed_when: false
+
+    ################################################################
+    # 3. Observability
+    ################################################################
+    - name: Wait for MultiClusterObservability CRD
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: multiclusterobservabilities.observability.open-cluster-management.io
+      register: mco_crd
+      until: mco_crd.resources | length > 0
+      retries: 60
+      delay: 5
+
+    - name: "Render observability overlay ({{ rhacm_overlay }})"
+      ansible.builtin.command:
+        cmd: oc kustomize "{{ rhacm_root }}/observability/overlays/{{ rhacm_overlay }}"
+      register: observability_manifests
+      changed_when: false
+
+    - name: "Apply observability overlay ({{ rhacm_overlay }})"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        definition: "{{ observability_manifests.stdout | from_yaml_all | list }}"
+        state: present
+
+    - name: Wait for observability-setup Job to complete
+      ansible.builtin.command:
+        cmd: >-
+          oc wait job/observability-setup
+          -n {{ ocm_obs_namespace }}
+          --for=condition=complete
+          --timeout=600s
+          --kubeconfig {{ kubeconfig_path }}
+      changed_when: false
+
+    ################################################################
+    # Summary
+    ################################################################
+    - name: Report deploy complete
+      ansible.builtin.debug:
+        msg:
+          - "RHACM full deploy completed (overlay={{ rhacm_overlay }})"
+          - "Verify: oc get csv,mch -n {{ ocm_namespace }}"
+          - "Verify: oc get mco observability"
+          - "Verify: oc get pods -n {{ ocm_obs_namespace }}"
+          - "Day-2 re-apply: oc apply -k {{ rhacm_root }}/overlays/{{ rhacm_overlay }}/"

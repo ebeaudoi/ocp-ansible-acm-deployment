@@ -36,72 +36,38 @@ Full detail: [rhacm/README.md](rhacm/README.md).
 Workloads are pinned to **infra nodes** via Subscription / MultiClusterHub / MCO
 fields (not namespace scheduler annotations).
 
-### 1. Set environment values
+**Prerequisite:** S4 must already be deployed (`s4/deploy-s4.yaml`).
 
-Choose the script that matches your cluster:
+### Full stack (recommended)
+
+Umbrella kustomizations live at `rhacm/overlays/{connected,airgapped}/` (operator
++ instance + observability). First install must be staged because CRDs appear
+asynchronously — use the deploy script:
 
 ```bash
 cd rhacm
-
-# Connected (redhat-operators, Automatic InstallPlan)
-vim update-rhacm-values-connected.sh
-./update-rhacm-values-connected.sh
-
-# Air-gapped (mirrored catalog, Manual InstallPlan)
-# vim update-rhacm-values.sh && ./update-rhacm-values.sh
+# optional: ./update-rhacm-values-connected.sh
+ansible-playbook deploy-rhacm.yaml                         # connected (default)
+ansible-playbook deploy-rhacm.yaml -e rhacm_overlay=airgapped
 ```
+
+Day-2 re-apply (CRDs already present):
 
 ```bash
-export OVERLAY=connected   # or: airgapped
+oc apply -k overlays/connected/
 ```
 
-### 2. Operator
+### Manual staged steps
 
-```bash
-oc apply -k operator/overlays/${OVERLAY}/
-```
+See [rhacm/README.md](rhacm/README.md) for operator → instance → observability
+commands if you need to debug a single stage.
 
-**Air-gapped only** — InstallPlan approval is Manual. Approve when ready:
-
-```bash
-oc get installplan -n open-cluster-management
-oc patch installplan <name> -n open-cluster-management \
-  --type merge -p '{"spec":{"approved":true}}'
-```
-
-Wait for the CSV:
-
-```bash
-oc wait csv -n open-cluster-management \
-  -l operators.coreos.com/advanced-cluster-management.open-cluster-management \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=600s
-```
-
-### 3. MultiClusterHub
-
-```bash
-oc apply -k instance/overlays/${OVERLAY}/
-oc wait mch multiclusterhub -n open-cluster-management \
-  --for=jsonpath='{.status.phase}'=Running --timeout=1200s
-```
-
-### 4. Observability (optional)
-
-Requires **S4** (see below). Apply only after MultiClusterHub is Running and S4
-is healthy.
-
-```bash
-oc apply -k observability/overlays/${OVERLAY}/
-oc wait job/observability-setup -n open-cluster-management-observability \
-  --for=condition=complete --timeout=600s
-```
-
-### 5. Verify
+### Verify
 
 ```bash
 oc get csv,mch -n open-cluster-management
 oc get pods -n open-cluster-management
-oc get mco observability   # if deployed
+oc get mco observability
 ```
 
 ---
@@ -156,9 +122,6 @@ oc get route s4-api -n s4 -o jsonpath='{.spec.host}{"\n"}'   # S3 API
 
 ## Suggested order
 
-1. **RHACM** operator → MultiClusterHub  
-2. **S4** (required before ACM observability; also useful for logging buckets)  
-3. **RHACM observability** (optional; Thanos object store → S4 bucket `acm-observability`)  
-4. **GitOps** when wiring Argo CD / ACM clusterset policies — see [`gitops/`](gitops/)
-
-RHACM hub and S4 can be deployed independently; observability depends on S4.
+1. **S4** (required before full ACM deploy with observability)  
+2. **RHACM** full stack via `rhacm/deploy-rhacm.yaml` (or umbrella `overlays/`)  
+3. **GitOps** when wiring Argo CD / ACM clusterset policies — see [`gitops/`](gitops/)

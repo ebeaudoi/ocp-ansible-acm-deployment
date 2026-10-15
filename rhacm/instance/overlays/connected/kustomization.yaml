@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+- target:
+    kind: MultiClusterHub
+    name: multiclusterhub
+  patch: |-
+    - op: replace
+      path: /metadata/annotations/installer.open-cluster-management.io~1mce-subscription-spec
+      value: '{"source":"redhat-operators","config":{"nodeSelector":{"node-role.kubernetes.io/infra":""},"tolerations":[{"key":"node-role.kubernetes.io/infra","operator":"Exists","effect":"NoSchedule"},{"key":"node-role.kubernetes.io/infra","operator":"Exists","effect":"NoExecute"}]}}'
