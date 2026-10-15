@@ -103,7 +103,7 @@
         definition: "{{ operator_manifests.stdout | from_yaml_all | list }}"
         state: present
 
-    - name: "Airgapped - wait for InstallPlan"
+    - name: Wait for InstallPlan to appear
       kubernetes.core.k8s_info:
         kubeconfig: "{{ kubeconfig_path }}"
         api_version: operators.coreos.com/v1alpha1
@@ -111,9 +111,8 @@
         namespace: "{{ ocm_namespace }}"
       register: installplans
       until: installplans.resources | length > 0
-      retries: 60
-      delay: 5
-      when: rhacm_overlay == 'airgapped'
+      retries: 90
+      delay: 10
 
     - name: "Airgapped - approve InstallPlan"
       kubernetes.core.k8s:
@@ -133,15 +132,46 @@
       loop_control:
         label: "{{ item.metadata.name }}"
 
+    # oc wait -l fails immediately if no CSV exists yet; wait via Subscription status instead
+    - name: Wait for ACM Subscription to resolve a CSV
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        name: acm-operator-subscription
+        namespace: "{{ ocm_namespace }}"
+      register: acm_sub
+      until: >
+        acm_sub.resources | length > 0 and (
+          (acm_sub.resources[0].status.installedCSV | default('') | length > 0) or
+          (acm_sub.resources[0].status.currentCSV | default('') | length > 0)
+        )
+      retries: 90
+      delay: 10
+
+    - name: Set ACM CSV name from Subscription
+      ansible.builtin.set_fact:
+        acm_csv_name: >-
+          {{ acm_sub.resources[0].status.installedCSV
+             | default(acm_sub.resources[0].status.currentCSV, true) }}
+
+    - name: Show ACM CSV being waited on
+      ansible.builtin.debug:
+        msg: "Waiting for ClusterServiceVersion {{ acm_csv_name }} to reach Succeeded"
+
     - name: Wait for ACM ClusterServiceVersion Succeeded
-      ansible.builtin.command:
-        cmd: >-
-          oc wait csv -n {{ ocm_namespace }}
-          -l operators.coreos.com/advanced-cluster-management.open-cluster-management
-          --for=jsonpath='{.status.phase}'=Succeeded
-          --timeout=900s
-          --kubeconfig {{ kubeconfig_path }}
-      changed_when: false
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        name: "{{ acm_csv_name }}"
+        namespace: "{{ ocm_namespace }}"
+      register: acm_csv
+      until: >
+        acm_csv.resources | length > 0 and
+        (acm_csv.resources[0].status.phase | default('')) == 'Succeeded'
+      retries: 90
+      delay: 10
 
     ################################################################
     # 2. MultiClusterHub instance
