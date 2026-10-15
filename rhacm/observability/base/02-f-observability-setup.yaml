@@ -25,6 +25,9 @@ spec:
       - name: observability-setup
         image: patch-me-see-overlays-dir
         imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: s4-thanos-config
         command:
         - /bin/bash
         - -c
@@ -39,37 +42,66 @@ spec:
             --type=kubernetes.io/dockerconfigjson \
             --dry-run=client -o yaml | oc apply -f -
 
-          echo "Retrieve acm-observability bucket credentials"
-          ACCESS_KEY=""
-          SECRET_KEY=""
+          echo "Wait for S4 credentials Secret ${S4_NAMESPACE}/${S4_SECRET_NAME}"
           ATTEMPTS=0
           MAX_ATTEMPTS=60
-          while [[ -z "${ACCESS_KEY}" || -z "${SECRET_KEY}" ]]; do
+          while ! oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" >/dev/null 2>&1; do
             if [[ ${ATTEMPTS} -ge ${MAX_ATTEMPTS} ]]; then
-              echo "Timed out waiting for acm-observability bucket secret" >&2
+              echo "Timed out waiting for ${S4_NAMESPACE}/${S4_SECRET_NAME}. Deploy S4 first (s4/deploy-s4.yaml)." >&2
               exit 1
             fi
-            echo "Waiting for acm-observability bucket secret (attempt $((ATTEMPTS + 1))/${MAX_ATTEMPTS})"
+            echo "Waiting for S4 secret (attempt $((ATTEMPTS + 1))/${MAX_ATTEMPTS})"
             sleep 5
             ATTEMPTS=$((ATTEMPTS + 1))
-            ACCESS_KEY=$(oc get secret acm-observability -n open-cluster-management-observability -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || true)
-            SECRET_KEY=$(oc get secret acm-observability -n open-cluster-management-observability -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || true)
           done
 
-          echo "Retrieve bucket name"
-          BUCKET_NAME=$(oc get ObjectBucketClaim acm-observability -n open-cluster-management-observability -o jsonpath='{.spec.bucketName}')
-          if [[ -z "${BUCKET_NAME}" ]]; then
-            echo "ObjectBucketClaim acm-observability has empty bucketName" >&2
+          ACCESS_KEY=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+          SECRET_KEY=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+          UI_USERNAME=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.UI_USERNAME}' | base64 -d)
+          UI_PASSWORD=$(oc get secret "${S4_SECRET_NAME}" -n "${S4_NAMESPACE}" -o jsonpath='{.data.UI_PASSWORD}' | base64 -d)
+
+          if [[ -z "${ACCESS_KEY}" || -z "${SECRET_KEY}" ]]; then
+            echo "S4 secret is missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY" >&2
             exit 1
           fi
 
-          echo "Apply thanos object storage configuration"
+          echo "Ensure S4 bucket ${S4_BUCKET} exists via ${S4_API_URL}"
+          AUTH_REQUIRED=$(curl -sf "${S4_API_URL}/auth/info" | sed -n 's/.*"authRequired"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' || true)
+          AUTH_HEADER=()
+          if [[ "${AUTH_REQUIRED}" == "true" ]]; then
+            TOKEN=$(curl -sf -X POST "${S4_API_URL}/auth/login" \
+              -H 'Content-Type: application/json' \
+              -d "{\"username\":\"${UI_USERNAME}\",\"password\":\"${UI_PASSWORD}\"}" \
+              | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+            if [[ -z "${TOKEN}" ]]; then
+              echo "Failed to obtain S4 API token" >&2
+              exit 1
+            fi
+            AUTH_HEADER=(-H "Authorization: Bearer ${TOKEN}")
+          fi
+          HTTP_CODE=$(curl -s -o /tmp/s4-bucket-create.json -w '%{http_code}' \
+            -X POST "${S4_API_URL}/buckets" \
+            -H 'Content-Type: application/json' \
+            "${AUTH_HEADER[@]}" \
+            -d "{\"bucketName\":\"${S4_BUCKET}\"}")
+          if [[ "${HTTP_CODE}" != "200" && "${HTTP_CODE}" != "409" ]]; then
+            echo "Failed to create S4 bucket ${S4_BUCKET} (HTTP ${HTTP_CODE}): $(cat /tmp/s4-bucket-create.json)" >&2
+            exit 1
+          fi
+          echo "S4 bucket ${S4_BUCKET} ready (HTTP ${HTTP_CODE})"
+
+          INSECURE_LINE="false"
+          if [[ "${S4_INSECURE}" == "true" ]]; then
+            INSECURE_LINE="true"
+          fi
+
+          echo "Apply thanos object storage configuration (endpoint ${S4_ENDPOINT}, bucket ${S4_BUCKET})"
           THANOS_YAML=$(printf '%s\n' \
             'type: s3' \
             'config:' \
-            "  bucket: ${BUCKET_NAME}" \
-            '  endpoint: s3.openshift-storage.svc' \
-            '  insecure: true' \
+            "  bucket: ${S4_BUCKET}" \
+            "  endpoint: ${S4_ENDPOINT}" \
+            "  insecure: ${INSECURE_LINE}" \
             "  access_key: ${ACCESS_KEY}" \
             "  secret_key: ${SECRET_KEY}")
           oc create secret generic thanos-object-storage \

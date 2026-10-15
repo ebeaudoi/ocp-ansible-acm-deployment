@@ -15,9 +15,8 @@ rules:
   - patch
   - update
 - apiGroups:
-  - objectbucket.io
+  - ""
   resources:
-  - objectbucketclaims
+  - configmaps
   verbs:
   - get
-  - list

@@ -19,6 +19,7 @@ spec:
     enableMetrics: true
     interval: 300
   storageConfig:
+    # Object store: S4 S3 (thanos-object-storage Secret from observability-setup Job)
     alertmanagerStorageSize: 1Gi
     compactStorageSize: 100Gi
     metricObjectStorage:
@@ -26,5 +27,6 @@ spec:
       name: thanos-object-storage
     receiveStorageSize: 100Gi
     ruleStorageSize: 1Gi
-    storageClass: ocs-storagecluster-ceph-rbd
+    # Block PVC StorageClass for stateful components (cluster default if omitted).
+    # Patch in an overlay if your cluster default is unsuitable.
     storeStorageSize: 10Gi
