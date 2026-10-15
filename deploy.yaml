@@ -307,6 +307,23 @@
         - deploy_observability | bool
       tags: [rhacm]
 
+    # Job.spec.template is immutable — delete before re-apply so script/image updates succeed
+    - name: RHACM | Delete observability-setup Job if present
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: batch/v1
+        kind: Job
+        name: observability-setup
+        namespace: "{{ ocm_obs_namespace }}"
+        state: absent
+        wait: true
+        delete_options:
+          propagationPolicy: Background
+      when:
+        - deploy_rhacm | bool
+        - deploy_observability | bool
+      tags: [rhacm]
+
     - name: RHACM | Apply observability
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
