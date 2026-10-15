@@ -121,10 +121,10 @@ Then deploy with `S4_OVERLAY=prod` or `-e s4_overlay=prod`.
 
 ## Deploy with Ansible (recommended)
 
-From this directory (`rhacm/s4`):
+From this directory (`s4/` at the repo root):
 
 ```bash
-cd rhacm/s4
+cd s4
 
 # Optional overrides
 export KUBECONFIG=~/ocpkubeconfig
@@ -146,7 +146,7 @@ The playbook will:
 ## Deploy with oc only
 
 ```bash
-cd rhacm/s4
+cd s4
 oc create namespace s4 --dry-run=client -o yaml | oc apply -f -
 oc apply -k overlays/lab -n s4
 oc rollout status deployment/s4 -n s4 --timeout=600s
