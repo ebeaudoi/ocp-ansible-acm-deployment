@@ -5,6 +5,7 @@ resources:
   - ../../base
 
 patches:
+# ose-cli image for the observability-setup Job
 - target:
     kind: Job
     name: observability-setup
@@ -12,3 +13,47 @@ patches:
     - op: replace
       path: /spec/template/spec/containers/0/image
       value: registry.redhat.io/openshift4/ose-cli-rhel9:latest
+
+# S3 / object-storage settings (edit via update-values.sh)
+- target:
+    kind: ConfigMap
+    name: observability-object-storage
+  patch: |-
+    - op: replace
+      path: /data/OBJSTORE_NAMESPACE
+      value: "s4"
+    - op: replace
+      path: /data/OBJSTORE_SECRET_NAME
+      value: "s4-credentials"
+    - op: replace
+      path: /data/OBJSTORE_ENDPOINT
+      value: "s4.s4.svc:7480"
+    - op: replace
+      path: /data/OBJSTORE_BUCKET
+      value: "acm-observability"
+    - op: replace
+      path: /data/OBJSTORE_INSECURE
+      value: "true"
+    - op: replace
+      path: /data/OBJSTORE_API_URL
+      value: "http://s4.s4.svc:5000/api"
+
+# Credentials Role namespace + secret name must match OBJSTORE_* above
+- target:
+    kind: Role
+    name: observability-setup-object-storage-credentials
+  patch: |-
+    - op: replace
+      path: /metadata/namespace
+      value: "s4"
+    - op: replace
+      path: /rules/0/resourceNames/0
+      value: "s4-credentials"
+
+- target:
+    kind: RoleBinding
+    name: observability-setup-object-storage-credentials
+  patch: |-
+    - op: replace
+      path: /metadata/namespace
+      value: "s4"

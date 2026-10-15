@@ -157,14 +157,14 @@ oc get group gitops-admins -o yaml   # users should not be empty for human admin
 
 ## Object storage for observability
 
-Defaults target **S4**. For AWS S3 / MinIO / other S3:
+Defaults target **S4**. Set bucket/endpoint/credentials via [`update-values.sh`](update-values.sh)
+(`RHACM_*_OBJSTORE_*`), which patches `rhacm/observability/overlays/{connected,airgapped}/`.
 
-| File | What |
-|------|------|
-| [`rhacm/observability/base/01-object-storage-config.yaml`](rhacm/observability/base/01-object-storage-config.yaml) | `OBJSTORE_*` endpoint, bucket, secret location; leave `OBJSTORE_API_URL` empty if no management API |
-| [`rhacm/observability/base/02-g-object-storage-credentials-role.yaml`](rhacm/observability/base/02-g-object-storage-credentials-role.yaml) | RBAC namespace/secret must match ConfigMap — **that namespace must already exist** before apply (default `s4`) |
-| [`rhacm/observability/base/02-h-object-storage-credentials-rolebinding.yaml`](rhacm/observability/base/02-h-object-storage-credentials-rolebinding.yaml) | Same |
-| [`rhacm/observability/base/02-f-observability-setup.yaml`](rhacm/observability/base/02-f-observability-setup.yaml) | Creates `thanos-object-storage` Secret |
+| Parameter | Purpose |
+|-----------|---------|
+| `OBJSTORE_NAMESPACE` / `OBJSTORE_SECRET_NAME` | Credentials Secret location (**namespace must exist** before apply) |
+| `OBJSTORE_ENDPOINT` / `OBJSTORE_BUCKET` / `OBJSTORE_INSECURE` | Thanos S3 settings |
+| `OBJSTORE_API_URL` | Optional management API to create the bucket; leave empty (`""`) for AWS/MinIO |
 
 Or create Secret `thanos-object-storage` yourself in `open-cluster-management-observability`.
 

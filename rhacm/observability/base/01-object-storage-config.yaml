@@ -1,7 +1,7 @@
 # Object storage settings for Thanos (S4, AWS S3, MinIO, or any S3-compatible store).
+# Real values are patched from overlays via update-values.sh (RHACM_*_OBJSTORE_*).
 # Create a credentials Secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-# before deploying observability (or leave OBJSTORE_API_URL empty and create the
-# bucket yourself). Leave OBJSTORE_API_URL empty for AWS/MinIO without an S4 UI API.
+# before deploying. Leave OBJSTORE_API_URL empty for AWS/MinIO without a management API.
 apiVersion: v1
 kind: ConfigMap
 metadata:

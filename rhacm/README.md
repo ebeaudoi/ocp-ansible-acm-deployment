@@ -44,8 +44,8 @@ Connected vs airgapped channel skew is intentional env defaults — change to ma
 
 | File | Notes |
 |------|--------|
-| `observability/base/01-object-storage-config.yaml` | `OBJSTORE_*` keys; set `OBJSTORE_API_URL` empty for AWS/MinIO without S4 UI API |
-| `observability/base/02-g-*.yaml` / `02-h-*.yaml` | RBAC for credentials Secret — namespace must match ConfigMap and **must already exist** (default `s4`) |
+| `observability/overlays/*/kustomization.yaml` | Patches for `OBJSTORE_*` + credentials RBAC (set via `update-values.sh`) |
+| `observability/base/01-object-storage-config.yaml` | Base defaults; overlays override |
 | `observability/base/02-f-observability-setup.yaml` | Creates pull-secret + `thanos-object-storage` |
 
 Skip entirely with `-e deploy_observability=false`.

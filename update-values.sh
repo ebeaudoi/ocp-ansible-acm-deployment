@@ -38,6 +38,15 @@ RHACM_CONNECTED_CHANNEL="release-2.17"          # online catalog channel
 RHACM_CONNECTED_CATALOG_SOURCE="redhat-operators"  # connected CatalogSource
 RHACM_CONNECTED_OSE_CLI_IMAGE="registry.redhat.io/openshift4/ose-cli-rhel9:latest"
 
+# Observability object storage (S4 / AWS S3 / MinIO / any S3-compatible)
+# Leave OBJSTORE_API_URL empty ("") to skip management-API bucket create.
+RHACM_CONNECTED_OBJSTORE_NAMESPACE="s4"
+RHACM_CONNECTED_OBJSTORE_SECRET_NAME="s4-credentials"
+RHACM_CONNECTED_OBJSTORE_ENDPOINT="s4.s4.svc:7480"
+RHACM_CONNECTED_OBJSTORE_BUCKET="acm-observability"
+RHACM_CONNECTED_OBJSTORE_INSECURE="true"
+RHACM_CONNECTED_OBJSTORE_API_URL="http://s4.s4.svc:5000/api"
+
 ###############################################################################
 # RHACM — AIRGAPPED overlay (operator / instance / observability)
 # Paths: rhacm/*/overlays/airgapped/
@@ -49,6 +58,14 @@ RHACM_AIRGAPPED_CHANNEL="release-2.12"          # mirrored catalog channel
 RHACM_AIRGAPPED_CATALOG_SOURCE="ebdn-redhat-operators"  # airgapped CatalogSource
 # Prefer an internal registry mirror @sha256 for disconnected clusters
 RHACM_AIRGAPPED_OSE_CLI_IMAGE="registry.redhat.io/openshift4/ose-cli@sha256:3b288bdf503733042786c07ab23ba344c8ad98a38717c192584d0e1926ae9758"
+
+# Observability object storage (same keys as connected; point at your mirror/S3)
+RHACM_AIRGAPPED_OBJSTORE_NAMESPACE="s4"
+RHACM_AIRGAPPED_OBJSTORE_SECRET_NAME="s4-credentials"
+RHACM_AIRGAPPED_OBJSTORE_ENDPOINT="s4.s4.svc:7480"
+RHACM_AIRGAPPED_OBJSTORE_BUCKET="acm-observability"
+RHACM_AIRGAPPED_OBJSTORE_INSECURE="true"
+RHACM_AIRGAPPED_OBJSTORE_API_URL="http://s4.s4.svc:5000/api"
 
 ###############################################################################
 # GITOPS — operator overlay (connected)
@@ -62,6 +79,11 @@ GITOPS_CATALOG_SOURCE="redhat-operators"        # connected CatalogSource
 # Helpers (do not edit)
 ###############################################################################
 BACKUP_SUFFIX="$(date +%Y%m%d-%HH%M)"
+
+# YAML-quote a scalar for JSON6902 patch "value:" lines.
+yaml_quote() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
 
 replace_json6902_value() {
   local file="$1"
@@ -116,6 +138,12 @@ update_rhacm_overlay() {
   local channel="$2"
   local catalog="$3"
   local ose_image="$4"
+  local obj_ns="$5"
+  local obj_secret="$6"
+  local obj_endpoint="$7"
+  local obj_bucket="$8"
+  local obj_insecure="$9"
+  local obj_api_url="${10}"
 
   local op="rhacm/operator/overlays/${kind}/kustomization.yaml"
   local inst="rhacm/instance/overlays/${kind}/kustomization.yaml"
@@ -124,9 +152,15 @@ update_rhacm_overlay() {
   echo ""
   echo "------------------------------------------"
   echo "[RHACM ${kind}] Updating overlays..."
-  echo "  Channel: ${channel}"
-  echo "  Catalog: ${catalog}"
-  echo "  OSE CLI: ${ose_image}"
+  echo "  Channel:      ${channel}"
+  echo "  Catalog:      ${catalog}"
+  echo "  OSE CLI:      ${ose_image}"
+  echo "  ObjStore NS:  ${obj_ns}"
+  echo "  ObjStore Sec: ${obj_secret}"
+  echo "  Endpoint:     ${obj_endpoint}"
+  echo "  Bucket:       ${obj_bucket}"
+  echo "  Insecure:     ${obj_insecure}"
+  echo "  API URL:      ${obj_api_url:-<empty — skip bucket create>}"
   echo "------------------------------------------"
 
   cp "${op}"{,."${BACKUP_SUFFIX}"}
@@ -136,6 +170,18 @@ update_rhacm_overlay() {
   replace_json6902_value "${op}" "/spec/channel" "${channel}"
   replace_json6902_value "${op}" "/spec/source" "${catalog}"
   replace_json6902_value "${obs}" "/spec/template/spec/containers/0/image" "${ose_image}"
+
+  # ConfigMap OBJSTORE_* (quoted scalars so empty API URL is valid YAML)
+  replace_json6902_value "${obs}" "/data/OBJSTORE_NAMESPACE" "$(yaml_quote "${obj_ns}")"
+  replace_json6902_value "${obs}" "/data/OBJSTORE_SECRET_NAME" "$(yaml_quote "${obj_secret}")"
+  replace_json6902_value "${obs}" "/data/OBJSTORE_ENDPOINT" "$(yaml_quote "${obj_endpoint}")"
+  replace_json6902_value "${obs}" "/data/OBJSTORE_BUCKET" "$(yaml_quote "${obj_bucket}")"
+  replace_json6902_value "${obs}" "/data/OBJSTORE_INSECURE" "$(yaml_quote "${obj_insecure}")"
+  replace_json6902_value "${obs}" "/data/OBJSTORE_API_URL" "$(yaml_quote "${obj_api_url}")"
+
+  # Credentials Role / RoleBinding must track namespace + secret name
+  replace_json6902_value "${obs}" "/metadata/namespace" "$(yaml_quote "${obj_ns}")"
+  replace_json6902_value "${obs}" "/rules/0/resourceNames/0" "$(yaml_quote "${obj_secret}")"
 
   local mce
   mce="$(mce_subscription_spec "${catalog}")"
@@ -178,14 +224,26 @@ if [[ "${UPDATE_RHACM_CONNECTED}" == "true" ]]; then
   update_rhacm_overlay connected \
     "${RHACM_CONNECTED_CHANNEL}" \
     "${RHACM_CONNECTED_CATALOG_SOURCE}" \
-    "${RHACM_CONNECTED_OSE_CLI_IMAGE}"
+    "${RHACM_CONNECTED_OSE_CLI_IMAGE}" \
+    "${RHACM_CONNECTED_OBJSTORE_NAMESPACE}" \
+    "${RHACM_CONNECTED_OBJSTORE_SECRET_NAME}" \
+    "${RHACM_CONNECTED_OBJSTORE_ENDPOINT}" \
+    "${RHACM_CONNECTED_OBJSTORE_BUCKET}" \
+    "${RHACM_CONNECTED_OBJSTORE_INSECURE}" \
+    "${RHACM_CONNECTED_OBJSTORE_API_URL}"
 fi
 
 if [[ "${UPDATE_RHACM_AIRGAPPED}" == "true" ]]; then
   update_rhacm_overlay airgapped \
     "${RHACM_AIRGAPPED_CHANNEL}" \
     "${RHACM_AIRGAPPED_CATALOG_SOURCE}" \
-    "${RHACM_AIRGAPPED_OSE_CLI_IMAGE}"
+    "${RHACM_AIRGAPPED_OSE_CLI_IMAGE}" \
+    "${RHACM_AIRGAPPED_OBJSTORE_NAMESPACE}" \
+    "${RHACM_AIRGAPPED_OBJSTORE_SECRET_NAME}" \
+    "${RHACM_AIRGAPPED_OBJSTORE_ENDPOINT}" \
+    "${RHACM_AIRGAPPED_OBJSTORE_BUCKET}" \
+    "${RHACM_AIRGAPPED_OBJSTORE_INSECURE}" \
+    "${RHACM_AIRGAPPED_OBJSTORE_API_URL}"
 fi
 
 if [[ "${UPDATE_GITOPS}" == "true" ]]; then
